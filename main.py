@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Bot - Main Telegram Bot
+SMS Bomber Bot - Main Telegram Bot (FIXED VERSION)
 Features: Force Join, SMS Bombing, Live Progress Panel
 """
 
@@ -14,7 +14,7 @@ from typing import Dict, Optional
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
-from pyrogram.errors import UserNotParticipant, ChatAdminRequired
+from pyrogram.errors import UserNotParticipant, ChatAdminRequired, FloodWait
 
 # Import local modules
 from config import (
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # User data storage
 user_data: Dict[int, Dict] = {}
 active_bombers: Dict[int, SMSBomber] = {}
+progress_messages: Dict[int, tuple] = {}  # user_id -> (chat_id, message_id)
 
 # Initialize bot
 app = Client(
@@ -90,38 +91,50 @@ def get_back_keyboard():
 # CHECK FORCE JOIN
 # ==========================================
 
-async def check_user_joined(user_id: int) -> bool:
+async def check_force_join(user_id: int) -> bool:
     """Check if user joined the required channel"""
     try:
         member = await app.get_chat_member(FORCE_JOIN_CHANNEL_ID, user_id)
-        return member.status not in ["left", "kicked"]
+        return member.status not in ["left", "kicked", "banned"]
     except UserNotParticipant:
         return False
     except Exception as e:
-        logger.error(f"Error checking user membership: {e}")
-        return True  # Allow if error
+        logger.error(f"Error checking force join: {e}")
+        return False
 
 # ==========================================
 # COMMAND HANDLERS
 # ==========================================
 
-@app.on_message(filters.command("start"))
+@app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
     """Handle /start command"""
     user_id = message.from_user.id
     
     # Initialize user data
-    user_data[user_id] = {
-        "step": "idle",
-        "phone_number": None,
-        "attempts": None,
-        "total_attacks": 0,
-        "total_sms_sent": 0
-    }
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "total_attacks": 0,
+            "total_sms_sent": 0,
+            "step": "idle"
+        }
     
+    # Check force join
+    is_joined = await check_force_join(user_id)
+    
+    if not is_joined:
+        force_text = FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL)
+        await message.reply_text(
+            force_text,
+            reply_markup=get_verify_keyboard(),
+            disable_web_page_preview=True
+        )
+        return
+    
+    # Show welcome message
     welcome_text = WELCOME_MESSAGE.format(
         name=message.from_user.first_name,
-        username=message.from_user.username or "Unknown"
+        username=message.from_user.username or "N/A"
     )
     
     await message.reply_text(
@@ -130,13 +143,19 @@ async def start_command(client, message: Message):
         disable_web_page_preview=True
     )
 
-@app.on_message(filters.command("help"))
+@app.on_message(filters.command("help") & filters.private)
 async def help_command(client, message: Message):
     """Handle /help command"""
     help_text = """
 ╔══════════════════════════════════════════╗
 ║           📖 HELP GUIDE                  ║
 ╚══════════════════════════════════════════╝
+
+🔹 Commands:
+   /start - Start the bot
+   /help - Show this help
+   /stats - Show your statistics
+   /cancel - Cancel active attack
 
 🔹 How to use:
    1. Click "🚀 START NOW"
@@ -145,26 +164,11 @@ async def help_command(client, message: Message):
    4. Enter number of attempts (100-5000)
    5. Watch live progress!
 
-🔹 Phone Number Format:
-   • +91XXXXXXXXXX ✓
-   • 91XXXXXXXXXX ✓
-   • XXXXXXXXXX ✓
-
-🔹 Tips:
-   • Higher attempts = More SMS
-   • Attack runs in background
-   • Live stats updated every 3 seconds
-   • Indian numbers only (+91)
-
-⚠️ Disclaimer:
-   Only use on numbers you own!
-   Misuse is strictly prohibited!
-
-🔰 Support: @admin
+⚠️ Disclaimer: Only use on numbers you own!
 """
     await message.reply_text(help_text, reply_markup=get_back_keyboard())
 
-@app.on_message(filters.command("stats"))
+@app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message: Message):
     """Handle /stats command"""
     user_id = message.from_user.id
@@ -183,35 +187,30 @@ async def stats_command(client, message: Message):
 📈 Statistics:
    • Total Attacks: {user_data[user_id].get('total_attacks', 0)}
    • Total SMS Sent: {user_data[user_id].get('total_sms_sent', 0)}
-   • Status: {'✅ Active' if user_id in active_bombers else '⏸ Idle'}
-
-⚡ Bot Status:
-   • Sites Available: {len(TARGET_SITES)}
-   • Version: 2.0
-   • Uptime: 24/7
 """
-    await message.reply_text(stats_text, reply_markup=get_back_keyboard())
+    await message.reply_text(stats_text, reply_markup=get_done_keyboard())
 
-@app.on_message(filters.command("admin") & filters.user(ADMIN_IDS))
-async def admin_command(client, message: Message):
-    """Handle /admin command (admin only)"""
-    total_users = len(user_data)
-    active_attacks = len(active_bombers)
+@app.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client, message: Message):
+    """Handle /cancel command"""
+    user_id = message.from_user.id
     
-    admin_text = f"""
-🔰 ADMIN PANEL
-
-📊 Bot Statistics:
-   • Total Users: {total_users}
-   • Active Attacks: {active_attacks}
-   • Total Sites: {len(TARGET_SITES)}
-
-⚙️ Commands:
-   /broadcast - Send message to all users
-   /ban - Ban a user
-   /unban - Unban a user
-"""
-    await message.reply_text(admin_text)
+    if user_id in active_bombers:
+        active_bombers[user_id].stop()
+        del active_bombers[user_id]
+        
+        if user_id in progress_messages:
+            del progress_messages[user_id]
+        
+        await message.reply_text(
+            "❌ Attack cancelled by user!",
+            reply_markup=get_done_keyboard()
+        )
+    else:
+        await message.reply_text(
+            "No active attack found!",
+            reply_markup=get_start_keyboard()
+        )
 
 # ==========================================
 # CALLBACK HANDLERS
@@ -219,29 +218,28 @@ async def admin_command(client, message: Message):
 
 @app.on_callback_query()
 async def callback_handler(client, callback_query: CallbackQuery):
-    """Handle all callback queries"""
+    """Handle callback queries"""
     user_id = callback_query.from_user.id
     data = callback_query.data
     
     try:
         if data == "start_bombing":
-            # Check force join
-            if not await check_user_joined(user_id):
+            # Check force join first
+            is_joined = await check_force_join(user_id)
+            
+            if not is_joined:
+                force_text = FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL)
                 await callback_query.message.edit_text(
-                    FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL),
+                    force_text,
                     reply_markup=get_verify_keyboard(),
                     disable_web_page_preview=True
                 )
-                return
-            
-            # Check if already has active attack
-            if user_id in active_bombers and active_bombers[user_id].stats["is_running"]:
-                await callback_query.answer("⚠️ You already have an active attack!", show_alert=True)
+                await callback_query.answer("Please join the channel first!", show_alert=True)
                 return
             
             # Initialize user data
             if user_id not in user_data:
-                user_data[user_id] = {}
+                user_data[user_id] = {"total_attacks": 0, "total_sms_sent": 0, "step": "idle"}
             
             user_data[user_id]["step"] = "waiting_number"
             
@@ -250,34 +248,32 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 reply_markup=get_back_keyboard(),
                 disable_web_page_preview=True
             )
+            await callback_query.answer()
         
         elif data == "verify_join":
-            # Verify if user joined
-            if await check_user_joined(user_id):
-                await callback_query.answer("✅ Verified successfully!", show_alert=True)
-                
-                # Initialize user data
-                if user_id not in user_data:
-                    user_data[user_id] = {}
-                
-                user_data[user_id]["step"] = "waiting_number"
-                
+            is_joined = await check_force_join(user_id)
+            
+            if is_joined:
+                welcome_text = WELCOME_MESSAGE.format(
+                    name=callback_query.from_user.first_name,
+                    username=callback_query.from_user.username or "N/A"
+                )
                 await callback_query.message.edit_text(
-                    ENTER_NUMBER_MESSAGE,
-                    reply_markup=get_back_keyboard(),
+                    welcome_text,
+                    reply_markup=get_start_keyboard(),
                     disable_web_page_preview=True
                 )
+                await callback_query.answer("✅ Verified successfully!", show_alert=True)
             else:
-                await callback_query.answer("❌ Please join the channel first!", show_alert=True)
+                await callback_query.answer("❌ You haven't joined yet! Join the channel first.", show_alert=True)
         
         elif data == "back_to_start":
-            # Reset user step
             if user_id in user_data:
                 user_data[user_id]["step"] = "idle"
             
             welcome_text = WELCOME_MESSAGE.format(
                 name=callback_query.from_user.first_name,
-                username=callback_query.from_user.username or "Unknown"
+                username=callback_query.from_user.username or "N/A"
             )
             
             await callback_query.message.edit_text(
@@ -285,6 +281,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 reply_markup=get_start_keyboard(),
                 disable_web_page_preview=True
             )
+            await callback_query.answer()
         
         elif data == "help":
             help_text = """
@@ -305,6 +302,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 help_text,
                 reply_markup=get_back_keyboard()
             )
+            await callback_query.answer()
         
         elif data == "my_stats":
             if user_id not in user_data:
@@ -326,24 +324,29 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 stats_text,
                 reply_markup=get_done_keyboard()
             )
+            await callback_query.answer()
         
         elif data == "cancel_attack":
             if user_id in active_bombers:
                 active_bombers[user_id].stop()
                 del active_bombers[user_id]
                 
+                if user_id in progress_messages:
+                    del progress_messages[user_id]
+                
                 await callback_query.message.edit_text(
                     "❌ Attack cancelled by user!",
                     reply_markup=get_done_keyboard()
                 )
+                await callback_query.answer("Attack cancelled!", show_alert=True)
             else:
                 await callback_query.answer("No active attack found!", show_alert=True)
         
-        await callback_query.answer()
-        
+    except FloodWait as e:
+        await callback_query.answer(f"Please wait {e.value} seconds...", show_alert=True)
     except Exception as e:
         logger.error(f"Error in callback handler: {e}")
-        await callback_query.answer("An error occurred!", show_alert=True)
+        await callback_query.answer("An error occurred! Try again.", show_alert=True)
 
 # ==========================================
 # MESSAGE HANDLERS
@@ -355,10 +358,14 @@ async def text_handler(client, message: Message):
     user_id = message.from_user.id
     text = message.text.strip()
     
+    # Skip commands
+    if text.startswith('/'):
+        return
+    
     # Check if user has active step
     if user_id not in user_data:
         await message.reply_text(
-            "Please start the bot first!",
+            "Please start the bot first! Use /start",
             reply_markup=get_start_keyboard()
         )
         return
@@ -415,6 +422,9 @@ async def text_handler(client, message: Message):
                 reply_markup=get_cancel_keyboard()
             )
             
+            # Store message info for progress updates
+            progress_messages[user_id] = (message.chat.id, start_msg.id)
+            
             # Initialize bomber
             bomber = SMSBomber(
                 phone_number=phone_number,
@@ -424,13 +434,8 @@ async def text_handler(client, message: Message):
             
             active_bombers[user_id] = bomber
             
-            # Start attack in background
-            attack_thread = threading.Thread(
-                target=run_attack,
-                args=(user_id, bomber, start_msg.message_id, message.chat.id)
-            )
-            attack_thread.daemon = True
-            attack_thread.start()
+            # Start attack in background using asyncio task instead of thread
+            asyncio.create_task(run_attack_async(user_id, bomber, start_msg.id, message.chat.id))
             
         except ValueError:
             await message.reply_text(
@@ -439,14 +444,15 @@ async def text_handler(client, message: Message):
             )
 
 # ==========================================
-# ATTACK FUNCTIONS
+# ATTACK FUNCTIONS (FIXED ASYNC VERSION)
 # ==========================================
 
-def run_attack(user_id: int, bomber: SMSBomber, message_id: int, chat_id: int):
-    """Run attack and update progress"""
+async def run_attack_async(user_id: int, bomber: SMSBomber, message_id: int, chat_id: int):
+    """Run attack and update progress (async version - FIXED)"""
     try:
-        # Start the attack
-        bomber.start_attack()
+        # Start the attack in thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, bomber.start_attack)
         
         # Update user stats
         if user_id in user_data:
@@ -465,24 +471,25 @@ def run_attack(user_id: int, bomber: SMSBomber, message_id: int, chat_id: int):
             duration=f"{stats['duration']:.1f}s"
         )
         
-        # Use asyncio to edit message
-        asyncio.run(edit_message_safe(chat_id, message_id, completion_text))
+        # Edit message with completion
+        await edit_message_safe(chat_id, message_id, completion_text)
         
-        # Clean up
-        if user_id in active_bombers:
-            del active_bombers[user_id]
-        
-        if user_id in user_data:
-            user_data[user_id]["step"] = "idle"
-            
     except Exception as e:
         logger.error(f"Error in attack: {e}")
-        asyncio.run(edit_message_safe(
+        await edit_message_safe(
             chat_id, 
             message_id, 
             f"❌ Error during attack: {str(e)}",
             get_done_keyboard()
-        ))
+        )
+    finally:
+        # Clean up
+        if user_id in active_bombers:
+            del active_bombers[user_id]
+        if user_id in progress_messages:
+            del progress_messages[user_id]
+        if user_id in user_data:
+            user_data[user_id]["step"] = "idle"
 
 async def edit_message_safe(chat_id: int, message_id: int, text: str, reply_markup=None):
     """Safely edit a message"""
@@ -501,11 +508,8 @@ async def edit_message_safe(chat_id: int, message_id: int, text: str, reply_mark
             pass
 
 # ==========================================
-# PROGRESS UPDATER
+# PROGRESS UPDATER (FIXED)
 # ==========================================
-
-# Store message IDs for progress updates
-progress_messages: Dict[int, tuple] = {}  # user_id -> (chat_id, message_id)
 
 async def update_progress():
     """Update progress for all active attacks every 3 seconds"""
@@ -543,6 +547,11 @@ async def main():
     """Main function to run the bot"""
     logger.info("Starting SMS Bomber Bot...")
     
+    # Check if config is set
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("❌ ERROR: Please set your BOT_TOKEN in config.py or .env file!")
+        sys.exit(1)
+    
     # Start the bot
     await app.start()
     
@@ -561,10 +570,5 @@ async def main():
     logger.info("Bot stopped!")
 
 if __name__ == "__main__":
-    # Check if config is set
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ ERROR: Please set your BOT_TOKEN in config.py!")
-        sys.exit(1)
-    
     # Run the bot
     asyncio.run(main())
