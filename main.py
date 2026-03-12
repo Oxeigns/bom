@@ -504,14 +504,31 @@ async def edit_message_safe(chat_id: int, message_id: int, text: str, reply_mark
 # PROGRESS UPDATER
 # ==========================================
 
+# Store message IDs for progress updates
+progress_messages: Dict[int, tuple] = {}  # user_id -> (chat_id, message_id)
+
 async def update_progress():
-    """Update progress for all active attacks"""
+    """Update progress for all active attacks every 3 seconds"""
     while True:
         try:
             for user_id, bomber in list(active_bombers.items()):
-                if bomber.stats["is_running"]:
-                    # Progress update logic here if needed
-                    pass
+                if bomber.stats["is_running"] and user_id in progress_messages:
+                    chat_id, message_id = progress_messages[user_id]
+                    
+                    try:
+                        # Get formatted stats
+                        stats_text = bomber.format_stats_message()
+                        
+                        # Edit message with updated stats
+                        await app.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=stats_text,
+                            reply_markup=get_cancel_keyboard()
+                        )
+                    except Exception as e:
+                        # Message might be the same or other error
+                        pass
             
             await asyncio.sleep(3)
         except Exception as e:
