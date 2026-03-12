@@ -25,11 +25,6 @@ from config import (
 )
 from sms import SMSBomber, validate_phone_number
 
-SAFETY_NOTICE = (
-    "⚠️ This bot does not support SMS bombing or harassment workflows.\n\n"
-    "Use this bot only for lawful automation (e.g., notifications, support, reminders)."
-)
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -229,12 +224,31 @@ async def callback_handler(client, callback_query: CallbackQuery):
     
     try:
         if data == "start_bombing":
+            # Check force join first
+            is_joined = await check_force_join(user_id)
+            
+            if not is_joined:
+                force_text = FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL)
+                await callback_query.message.edit_text(
+                    force_text,
+                    reply_markup=get_verify_keyboard(),
+                    disable_web_page_preview=True
+                )
+                await callback_query.answer("Please join the channel first!", show_alert=True)
+                return
+            
+            # Initialize user data
+            if user_id not in user_data:
+                user_data[user_id] = {"total_attacks": 0, "total_sms_sent": 0, "step": "idle"}
+            
+            user_data[user_id]["step"] = "waiting_number"
+            
             await callback_query.message.edit_text(
-                SAFETY_NOTICE,
+                ENTER_NUMBER_MESSAGE,
                 reply_markup=get_back_keyboard(),
                 disable_web_page_preview=True
             )
-            await callback_query.answer("Feature disabled for safety.", show_alert=True)
+            await callback_query.answer()
         
         elif data == "verify_join":
             is_joined = await check_force_join(user_id)
@@ -357,14 +371,6 @@ async def text_handler(client, message: Message):
         return
     
     step = user_data[user_id].get("step", "idle")
-
-    if step == "idle":
-        await message.reply_text(
-            SAFETY_NOTICE,
-            reply_markup=get_back_keyboard(),
-            disable_web_page_preview=True
-        )
-        return
     
     if step == "waiting_number":
         # Validate phone number
