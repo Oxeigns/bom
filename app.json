@@ -1,0 +1,51 @@
+{
+  "name": "SMS Bomber Bot",
+  "description": "Ultimate SMS Bomber Bot with 150+ Indian Sites, Force Join, Live Progress Panel",
+  "repository": "https://github.com/yourusername/sms-bomber-bot",
+  "logo": "https://telegra.ph/file/your-logo.png",
+  "keywords": [
+    "telegram",
+    "bot",
+    "sms",
+    "bomber",
+    "pyrogram",
+    "python"
+  ],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "API_ID": {
+      "description": "Your API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Your API Hash from my.telegram.org",
+      "required": true
+    },
+    "FORCE_JOIN_CHANNEL": {
+      "description": "Channel username for force join (e.g., @yourchannel)",
+      "required": true
+    },
+    "FORCE_JOIN_CHANNEL_ID": {
+      "description": "Channel ID for force join (e.g., -1001234567890)",
+      "required": true
+    },
+    "ADMIN_IDS": {
+      "description": "Admin User IDs separated by commas (e.g., 123456789,987654321)",
+      "required": false
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "eco"
+    }
+  }
+}
