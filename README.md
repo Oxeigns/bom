@@ -23,7 +23,7 @@ A powerful Telegram bot for SMS bombing with **150+ Indian sites**, force join v
 
 ### 2. Deploy to Heroku
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Oxeigns/bom.git)
 
 ### 3. Or Deploy Locally
 
