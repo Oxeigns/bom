@@ -161,23 +161,50 @@ async def check_membership(user_id: int) -> bool:
 # HANDLERS
 # ==========================================
 
-@app.on_message(filters.command("start"))
+@logger.catch
+@app.on_message(filters.command("start") & (filters.private | filters.group))
 async def cmd_start(client, message: Message):
-    """Handle /start command"""
-    user = message.from_user
-    session = state.get_session(user.id, user.username)
-    
-    welcome = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
-    
-    # Check force join
-    if channel_config.is_configured:
-        is_member = await check_membership(user.id)
-        if not is_member:
-            force_msg = MESSAGES["FORCE_JOIN"].format(channel=channel_config.USERNAME)
-            await message.reply_text(welcome + "\n\n" + force_msg, reply_markup=verify_keyboard())
+    """Handle /start command in both private and group chats"""
+    try:
+        # Get user info (handle both private and group contexts)
+        user = message.from_user
+        if not user:
+            # In groups, if user info isn't available, try to get from message
+            logger.warning("No user info in start command")
             return
-    
-    await message.reply_text(welcome, reply_markup=main_keyboard())
+        
+        user_id = user.id
+        username = user.username
+        
+        logger.info(f"/start from user {user_id} (@{username}) in chat {message.chat.id} ({message.chat.type})")
+        
+        # Initialize session
+        session = state.get_session(user_id, username)
+        session.step = "idle"  # Reset step on start
+        
+        welcome = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
+        
+        # Check force join (only in private chats)
+        if message.chat.type == "private" and channel_config.is_configured:
+            try:
+                is_member = await check_membership(user_id)
+                if not is_member:
+                    force_msg = MESSAGES["FORCE_JOIN"].format(channel=channel_config.USERNAME)
+                    await message.reply_text(welcome + "\n\n" + force_msg, reply_markup=verify_keyboard())
+                    return
+            except Exception as e:
+                logger.error(f"Membership check failed: {e}")
+                # Continue anyway on membership check failure
+        
+        await message.reply_text(welcome, reply_markup=main_keyboard())
+        logger.info(f"Sent welcome to user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error in /start handler: {e}", exc_info=True)
+        try:
+            await message.reply_text("❌ An error occurred. Please try again or contact support.")
+        except:
+            pass
 
 
 @app.on_message(filters.command("help"))
