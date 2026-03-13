@@ -94,6 +94,7 @@ class UserSession:
     last_attack: Optional[datetime] = None
     total_attacks: int = 0
     message_id: Optional[int] = None
+    chat_id: Optional[int] = None
 
 
 # ============================================================
@@ -230,6 +231,7 @@ async def cmd_start(client, message: Message):
 
         session = state.get_session(user.id, user.username)
         session.step = "idle"
+        session.chat_id = message.chat.id
 
         welcome = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
 
@@ -254,7 +256,7 @@ async def cmd_start(client, message: Message):
             pass
 
 
-@app.on_message(filters.command("help") & (filters.private | filters.group))
+@app.on_message(filters.command("help") & (filters.private | filters.group | filters.supergroup))
 async def cmd_help(client, message: Message):
     """Handle /help"""
     try:
@@ -299,7 +301,7 @@ async def cmd_help(client, message: Message):
         await message.reply_text("❌ Error showing help.")
 
 
-@app.on_message(filters.command("stats") & (filters.private | filters.group))
+@app.on_message(filters.command("stats") & (filters.private | filters.group | filters.supergroup))
 async def cmd_stats(client, message: Message):
     """Handle /stats"""
     try:
@@ -406,6 +408,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 return
 
             session.step = "phone"
+            session.chat_id = callback_query.message.chat.id
             await callback_query.message.edit_text(
                 MESSAGES["ENTER_PHONE"],
                 reply_markup=InlineKeyboardMarkup([
@@ -492,7 +495,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
 # TEXT MESSAGE HANDLER (state machine)
 # ============================================================
 
-@app.on_message(filters.text & filters.private)
+@app.on_message(filters.text & (filters.private | filters.group | filters.supergroup))
 async def text_handler(client, message: Message):
     """Handle user text input for the attack flow"""
     user = message.from_user
@@ -502,6 +505,7 @@ async def text_handler(client, message: Message):
     user_id = user.id
     text = message.text.strip()
     session = state.get_session(user_id, user.username)
+    session.chat_id = message.chat.id
 
     # Ignore commands — let command handlers deal with them
     if text.startswith("/"):
@@ -602,7 +606,7 @@ async def text_handler(client, message: Message):
 async def _update_progress(user_id: int, stats: AttackStats):
     """Push live progress to the status message."""
     session = state.get_session(user_id)
-    if not session.message_id:
+    if not session.message_id or session.chat_id is None:
         return
 
     bomber = state.active_bombers.get(user_id)
@@ -611,7 +615,7 @@ async def _update_progress(user_id: int, stats: AttackStats):
 
     try:
         await app.edit_message_text(
-            chat_id=user_id,
+            chat_id=session.chat_id,
             message_id=session.message_id,
             text=bomber.format_status(),
             reply_markup=cancel_keyboard()
