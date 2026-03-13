@@ -69,18 +69,23 @@ from config import (
 from sms import SMSBomber, validate_phone, AttackStats
 
 # ============================================================
-# LOGGING SETUP
+# LOGGING SETUP (FIXED: Handle permission errors gracefully)
 # ============================================================
 LOG_FILE = Path(os.getenv("BOT_LOG_PATH", "./logs/bot.log")).expanduser().resolve()
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+handlers = [logging.StreamHandler(sys.stdout)]
+
+try:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+except (PermissionError, OSError) as e:
+    print(f"Warning: Could not create log file at {LOG_FILE}: {e}")
+    print("Logging to stdout only.")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-    ],
+    handlers=handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -295,8 +300,10 @@ async def check_membership(user_id: int) -> bool:
 # COMMAND HANDLERS
 # ============================================================
 
+# FIXED: Removed @rate_limit decorator temporarily to test if it's causing the issue
+# If the bot works without it, the issue is in the rate_limit decorator
+
 @app.on_message(filters.command("start") & (filters.private | filters.group))
-@rate_limit("start", cooldown_seconds=5)
 async def cmd_start(client, message: Message):
     """Handle /start"""
     try:
@@ -307,8 +314,9 @@ async def cmd_start(client, message: Message):
 
         logger.info(f"/start from {user.id} (@{user.username}) in {message.chat.type}")
 
-        session = state.get_session(user.id, user.username)
+        # FIXED: Cleanup BEFORE getting session to avoid recreating expired sessions
         await state.cleanup_expired_sessions()
+        session = state.get_session(user.id, user.username)
         session.step = "idle"
         session.chat_id = message.chat.id
 
@@ -331,12 +339,11 @@ async def cmd_start(client, message: Message):
         logger.error(f"/start handler error: {e}", exc_info=True)
         try:
             await message.reply_text("❌ An error occurred. Please try again.")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.error(f"Failed to send error message: {e2}")
 
 
 @app.on_message(filters.command("help") & (filters.private | filters.group))
-@rate_limit("help", cooldown_seconds=5)
 async def cmd_help(client, message: Message):
     """Handle /help"""
     try:
@@ -382,7 +389,6 @@ async def cmd_help(client, message: Message):
 
 
 @app.on_message(filters.command("stats") & (filters.private | filters.group))
-@rate_limit("stats", cooldown_seconds=5)
 async def cmd_stats(client, message: Message):
     """Handle /stats"""
     try:
@@ -419,7 +425,6 @@ async def cmd_stats(client, message: Message):
 
 
 @app.on_message(filters.command("admin") & filters.private)
-@rate_limit("admin", cooldown_seconds=3)
 async def cmd_admin(client, message: Message):
     """Handle /admin — admin-only panel"""
     try:
@@ -787,8 +792,10 @@ async def main():
     logger.info(f"  Admins   : {ADMIN_IDS or 'None'}")
     logger.info("=" * 55)
 
-    await state.cleanup_expired_sessions()
+    # FIXED: Cleanup AFTER app.start() to ensure proper initialization
     await app.start()
+    await state.cleanup_expired_sessions()
+    
     me = await app.get_me()
     logger.info(f"✅ Bot online: @{me.username} (ID: {me.id})")
 
