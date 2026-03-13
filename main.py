@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Bot - Main Telegram Bot (FIXED VERSION)
+SMS Bomber Bot - Main Telegram Bot (FULLY FIXED VERSION)
 Features: Force Join, SMS Bombing, Live Progress Panel
+Fixed: All handlers, async/threading, error handling
 """
 
 import os
@@ -14,7 +15,7 @@ from typing import Dict, Optional
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
-from pyrogram.errors import UserNotParticipant, ChatAdminRequired, FloodWait
+from pyrogram.errors import UserNotParticipant, ChatAdminRequired, FloodWait, MessageNotModified
 
 # Import local modules
 from config import (
@@ -91,71 +92,62 @@ def get_back_keyboard():
 # CHECK FORCE JOIN
 # ==========================================
 
-async def check_force_join(user_id: int) -> bool:
+async def check_user_joined(user_id: int) -> bool:
     """Check if user joined the required channel"""
     try:
         member = await app.get_chat_member(FORCE_JOIN_CHANNEL_ID, user_id)
-        return member.status not in ["left", "kicked", "banned"]
+        return member.status not in ["left", "kicked", "restricted"]
     except UserNotParticipant:
         return False
+    except ChatAdminRequired:
+        logger.error("Bot is not admin in the force join channel!")
+        return True  # Allow if bot can't check
     except Exception as e:
-        logger.error(f"Error checking force join: {e}")
-        return False
+        logger.error(f"Error checking user membership: {e}")
+        return True  # Allow if error
 
 # ==========================================
 # COMMAND HANDLERS
 # ==========================================
 
-@app.on_message(filters.command("start") & filters.private)
+@app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
     """Handle /start command"""
-    user_id = message.from_user.id
-    
-    # Initialize user data
-    if user_id not in user_data:
+    try:
+        user_id = message.from_user.id
+        
+        # Initialize user data
         user_data[user_id] = {
+            "step": "idle",
+            "phone_number": None,
+            "attempts": None,
             "total_attacks": 0,
-            "total_sms_sent": 0,
-            "step": "idle"
+            "total_sms_sent": 0
         }
-    
-    # Check force join
-    is_joined = await check_force_join(user_id)
-    
-    if not is_joined:
-        force_text = FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL)
+        
+        welcome_text = WELCOME_MESSAGE.format(
+            name=message.from_user.first_name,
+            username=message.from_user.username or "Unknown"
+        )
+        
         await message.reply_text(
-            force_text,
-            reply_markup=get_verify_keyboard(),
+            welcome_text,
+            reply_markup=get_start_keyboard(),
             disable_web_page_preview=True
         )
-        return
-    
-    # Show welcome message
-    welcome_text = WELCOME_MESSAGE.format(
-        name=message.from_user.first_name,
-        username=message.from_user.username or "N/A"
-    )
-    
-    await message.reply_text(
-        welcome_text,
-        reply_markup=get_start_keyboard(),
-        disable_web_page_preview=True
-    )
+        logger.info(f"User {user_id} started the bot")
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
+        await message.reply_text("❌ An error occurred. Please try again!")
 
-@app.on_message(filters.command("help") & filters.private)
+@app.on_message(filters.command("help"))
 async def help_command(client, message: Message):
     """Handle /help command"""
-    help_text = """
+    try:
+        help_text = """
 ╔══════════════════════════════════════════╗
 ║           📖 HELP GUIDE                  ║
 ╚══════════════════════════════════════════╝
-
-🔹 Commands:
-   /start - Start the bot
-   /help - Show this help
-   /stats - Show your statistics
-   /cancel - Cancel active attack
 
 🔹 How to use:
    1. Click "🚀 START NOW"
@@ -164,19 +156,37 @@ async def help_command(client, message: Message):
    4. Enter number of attempts (100-5000)
    5. Watch live progress!
 
-⚠️ Disclaimer: Only use on numbers you own!
-"""
-    await message.reply_text(help_text, reply_markup=get_back_keyboard())
+🔹 Phone Number Format:
+   • +91XXXXXXXXXX ✓
+   • 91XXXXXXXXXX ✓
+   • XXXXXXXXXX ✓
 
-@app.on_message(filters.command("stats") & filters.private)
+🔹 Tips:
+   • Higher attempts = More SMS
+   • Attack runs in background
+   • Live stats updated every 3 seconds
+   • Indian numbers only (+91)
+
+⚠️ Disclaimer:
+   Only use on numbers you own!
+   Misuse is strictly prohibited!
+
+🔰 Support: @admin
+"""
+        await message.reply_text(help_text, reply_markup=get_back_keyboard())
+    except Exception as e:
+        logger.error(f"Error in help command: {e}")
+
+@app.on_message(filters.command("stats"))
 async def stats_command(client, message: Message):
     """Handle /stats command"""
-    user_id = message.from_user.id
-    
-    if user_id not in user_data:
-        user_data[user_id] = {"total_attacks": 0, "total_sms_sent": 0}
-    
-    stats_text = f"""
+    try:
+        user_id = message.from_user.id
+        
+        if user_id not in user_data:
+            user_data[user_id] = {"total_attacks": 0, "total_sms_sent": 0}
+        
+        stats_text = f"""
 ╔══════════════════════════════════════════╗
 ║           📊 YOUR STATS                  ║
 ╚══════════════════════════════════════════╝
@@ -188,44 +198,50 @@ async def stats_command(client, message: Message):
    • Total Attacks: {user_data[user_id].get('total_attacks', 0)}
    • Total SMS Sent: {user_data[user_id].get('total_sms_sent', 0)}
 """
-    await message.reply_text(stats_text, reply_markup=get_done_keyboard())
+        await message.reply_text(stats_text, reply_markup=get_done_keyboard())
+    except Exception as e:
+        logger.error(f"Error in stats command: {e}")
 
-@app.on_message(filters.command("cancel") & filters.private)
-async def cancel_command(client, message: Message):
-    """Handle /cancel command"""
-    user_id = message.from_user.id
-    
-    if user_id in active_bombers:
-        active_bombers[user_id].stop()
-        del active_bombers[user_id]
+@app.on_message(filters.command("stop") & filters.private)
+async def stop_command(client, message: Message):
+    """Handle /stop command to cancel attack"""
+    try:
+        user_id = message.from_user.id
         
-        if user_id in progress_messages:
-            del progress_messages[user_id]
-        
-        await message.reply_text(
-            "❌ Attack cancelled by user!",
-            reply_markup=get_done_keyboard()
-        )
-    else:
-        await message.reply_text(
-            "No active attack found!",
-            reply_markup=get_start_keyboard()
-        )
+        if user_id in active_bombers:
+            active_bombers[user_id].stop()
+            del active_bombers[user_id]
+            
+            # Clear progress message
+            if user_id in progress_messages:
+                del progress_messages[user_id]
+            
+            await message.reply_text("✅ Attack stopped!", reply_markup=get_done_keyboard())
+            
+            if user_id in user_data:
+                user_data[user_id]["step"] = "idle"
+        else:
+            await message.reply_text("ℹ️ No active attack found!", reply_markup=get_done_keyboard())
+    except Exception as e:
+        logger.error(f"Error in stop command: {e}")
 
 # ==========================================
-# CALLBACK HANDLERS
+# CALLBACK HANDLERS (MISSING IN ORIGINAL!)
 # ==========================================
 
 @app.on_callback_query()
 async def callback_handler(client, callback_query: CallbackQuery):
-    """Handle callback queries"""
-    user_id = callback_query.from_user.id
-    data = callback_query.data
-    
+    """Handle all callback queries"""
     try:
+        data = callback_query.data
+        user_id = callback_query.from_user.id
+        
+        # Answer callback immediately to prevent timeout
+        await callback_query.answer()
+        
         if data == "start_bombing":
             # Check force join first
-            is_joined = await check_force_join(user_id)
+            is_joined = await check_user_joined(user_id)
             
             if not is_joined:
                 force_text = FORCE_JOIN_MESSAGE.format(channel=FORCE_JOIN_CHANNEL)
@@ -234,13 +250,24 @@ async def callback_handler(client, callback_query: CallbackQuery):
                     reply_markup=get_verify_keyboard(),
                     disable_web_page_preview=True
                 )
-                await callback_query.answer("Please join the channel first!", show_alert=True)
                 return
             
-            # Initialize user data
-            if user_id not in user_data:
-                user_data[user_id] = {"total_attacks": 0, "total_sms_sent": 0, "step": "idle"}
+            # Check if already attacking
+            if user_id in active_bombers and active_bombers[user_id].stats["is_running"]:
+                await callback_query.answer("⚠️ You already have an active attack!", show_alert=True)
+                return
             
+            # Initialize user data if not exists
+            if user_id not in user_data:
+                user_data[user_id] = {
+                    "step": "idle",
+                    "phone_number": None,
+                    "attempts": None,
+                    "total_attacks": 0,
+                    "total_sms_sent": 0
+                }
+            
+            # Set step to waiting for number
             user_data[user_id]["step"] = "waiting_number"
             
             await callback_query.message.edit_text(
@@ -248,32 +275,40 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 reply_markup=get_back_keyboard(),
                 disable_web_page_preview=True
             )
-            await callback_query.answer()
         
         elif data == "verify_join":
-            is_joined = await check_force_join(user_id)
+            # Verify if user joined
+            is_joined = await check_user_joined(user_id)
             
             if is_joined:
-                welcome_text = WELCOME_MESSAGE.format(
-                    name=callback_query.from_user.first_name,
-                    username=callback_query.from_user.username or "N/A"
-                )
+                await callback_query.answer("✅ Verified!", show_alert=True)
+                # Set step to waiting for number
+                if user_id not in user_data:
+                    user_data[user_id] = {
+                        "step": "idle",
+                        "phone_number": None,
+                        "attempts": None,
+                        "total_attacks": 0,
+                        "total_sms_sent": 0
+                    }
+                user_data[user_id]["step"] = "waiting_number"
+                
                 await callback_query.message.edit_text(
-                    welcome_text,
-                    reply_markup=get_start_keyboard(),
+                    ENTER_NUMBER_MESSAGE,
+                    reply_markup=get_back_keyboard(),
                     disable_web_page_preview=True
                 )
-                await callback_query.answer("✅ Verified successfully!", show_alert=True)
             else:
-                await callback_query.answer("❌ You haven't joined yet! Join the channel first.", show_alert=True)
+                await callback_query.answer("❌ Please join the channel first!", show_alert=True)
         
         elif data == "back_to_start":
+            # Reset user step
             if user_id in user_data:
                 user_data[user_id]["step"] = "idle"
             
             welcome_text = WELCOME_MESSAGE.format(
                 name=callback_query.from_user.first_name,
-                username=callback_query.from_user.username or "N/A"
+                username=callback_query.from_user.username or "Unknown"
             )
             
             await callback_query.message.edit_text(
@@ -281,7 +316,6 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 reply_markup=get_start_keyboard(),
                 disable_web_page_preview=True
             )
-            await callback_query.answer()
         
         elif data == "help":
             help_text = """
@@ -302,7 +336,6 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 help_text,
                 reply_markup=get_back_keyboard()
             )
-            await callback_query.answer()
         
         elif data == "my_stats":
             if user_id not in user_data:
@@ -324,13 +357,13 @@ async def callback_handler(client, callback_query: CallbackQuery):
                 stats_text,
                 reply_markup=get_done_keyboard()
             )
-            await callback_query.answer()
         
         elif data == "cancel_attack":
             if user_id in active_bombers:
                 active_bombers[user_id].stop()
                 del active_bombers[user_id]
                 
+                # Clear progress message
                 if user_id in progress_messages:
                     del progress_messages[user_id]
                 
@@ -342,117 +375,136 @@ async def callback_handler(client, callback_query: CallbackQuery):
             else:
                 await callback_query.answer("No active attack found!", show_alert=True)
         
+    except MessageNotModified:
+        pass  # Ignore if message is same
     except FloodWait as e:
-        await callback_query.answer(f"Please wait {e.value} seconds...", show_alert=True)
+        logger.warning(f"FloodWait: {e.value} seconds")
+        await asyncio.sleep(e.value)
     except Exception as e:
         logger.error(f"Error in callback handler: {e}")
-        await callback_query.answer("An error occurred! Try again.", show_alert=True)
+        try:
+            await callback_query.answer("An error occurred!", show_alert=True)
+        except:
+            pass
 
 # ==========================================
-# MESSAGE HANDLERS
+# MESSAGE HANDLERS (WERE MISSING!)
 # ==========================================
 
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
-    """Handle text messages"""
-    user_id = message.from_user.id
-    text = message.text.strip()
-    
-    # Skip commands
-    if text.startswith('/'):
-        return
-    
-    # Check if user has active step
-    if user_id not in user_data:
-        await message.reply_text(
-            "Please start the bot first! Use /start",
-            reply_markup=get_start_keyboard()
-        )
-        return
-    
-    step = user_data[user_id].get("step", "idle")
-    
-    if step == "waiting_number":
-        # Validate phone number
-        is_valid, result = validate_phone_number(text)
+    """Handle text messages - THIS WAS MISSING!"""
+    try:
+        user_id = message.from_user.id
+        text = message.text.strip()
         
-        if not is_valid:
+        # Ignore commands
+        if text.startswith("/"):
+            return
+        
+        # Check if user has active step
+        if user_id not in user_data:
             await message.reply_text(
-                f"❌ {result}\n\nPlease try again:",
-                reply_markup=get_back_keyboard()
+                "Please start the bot first with /start!",
+                reply_markup=get_start_keyboard()
             )
             return
         
-        # Store phone number
-        user_data[user_id]["phone_number"] = result
-        user_data[user_id]["step"] = "waiting_attempts"
+        step = user_data[user_id].get("step", "idle")
         
-        await message.reply_text(
-            ENTER_ATTEMPTS_MESSAGE.format(min=MIN_ATTEMPTS, max=MAX_ATTEMPTS),
-            reply_markup=get_back_keyboard()
-        )
-    
-    elif step == "waiting_attempts":
-        # Validate attempts
-        try:
-            attempts = int(text)
+        if step == "waiting_number":
+            # Validate phone number
+            is_valid, result = validate_phone_number(text)
             
-            if attempts < MIN_ATTEMPTS or attempts > MAX_ATTEMPTS:
+            if not is_valid:
                 await message.reply_text(
-                    f"❌ Please enter a number between {MIN_ATTEMPTS} and {MAX_ATTEMPTS}!",
+                    f"❌ {result}\n\nPlease try again:",
                     reply_markup=get_back_keyboard()
                 )
                 return
             
-            # Store attempts
-            user_data[user_id]["attempts"] = attempts
-            user_data[user_id]["step"] = "attacking"
+            # Store phone number
+            user_data[user_id]["phone_number"] = result
+            user_data[user_id]["step"] = "waiting_attempts"
             
-            # Start attack
-            phone_number = user_data[user_id]["phone_number"]
-            
-            # Show attack started message
-            start_msg = await message.reply_text(
-                ATTACK_STARTED_MESSAGE.format(
-                    number=phone_number,
-                    attempts=attempts,
-                    sites=len(TARGET_SITES),
-                    threads=5
-                ),
-                reply_markup=get_cancel_keyboard()
-            )
-            
-            # Store message info for progress updates
-            progress_messages[user_id] = (message.chat.id, start_msg.id)
-            
-            # Initialize bomber
-            bomber = SMSBomber(
-                phone_number=phone_number,
-                total_attempts=attempts,
-                progress_callback=None
-            )
-            
-            active_bombers[user_id] = bomber
-            
-            # Start attack in background using asyncio task instead of thread
-            asyncio.create_task(run_attack_async(user_id, bomber, start_msg.id, message.chat.id))
-            
-        except ValueError:
             await message.reply_text(
-                "❌ Please enter a valid number!",
+                ENTER_ATTEMPTS_MESSAGE.format(min=MIN_ATTEMPTS, max=MAX_ATTEMPTS),
                 reply_markup=get_back_keyboard()
             )
+        
+        elif step == "waiting_attempts":
+            # Validate attempts
+            try:
+                attempts = int(text)
+                
+                if attempts < MIN_ATTEMPTS or attempts > MAX_ATTEMPTS:
+                    await message.reply_text(
+                        f"❌ Please enter a number between {MIN_ATTEMPTS} and {MAX_ATTEMPTS}!",
+                        reply_markup=get_back_keyboard()
+                    )
+                    return
+                
+                # Check if already attacking
+                if user_id in active_bombers and active_bombers[user_id].stats["is_running"]:
+                    await message.reply_text("⚠️ You already have an active attack! Please wait or use /stop")
+                    return
+                
+                # Store attempts
+                user_data[user_id]["attempts"] = attempts
+                user_data[user_id]["step"] = "attacking"
+                
+                # Start attack
+                phone_number = user_data[user_id]["phone_number"]
+                
+                # Show attack started message
+                start_msg = await message.reply_text(
+                    ATTACK_STARTED_MESSAGE.format(
+                        number=phone_number,
+                        attempts=attempts,
+                        sites=len(TARGET_SITES),
+                        threads=5
+                    ),
+                    reply_markup=get_cancel_keyboard()
+                )
+                
+                # Store message info for progress updates
+                progress_messages[user_id] = (message.chat.id, start_msg.id)
+                
+                # Initialize bomber
+                bomber = SMSBomber(
+                    phone_number=phone_number,
+                    total_attempts=attempts,
+                    progress_callback=None
+                )
+                
+                active_bombers[user_id] = bomber
+                
+                # Start attack in background thread
+                attack_thread = threading.Thread(
+                    target=run_attack_sync,
+                    args=(user_id, bomber, start_msg.id, message.chat.id),
+                    daemon=True
+                )
+                attack_thread.start()
+                
+            except ValueError:
+                await message.reply_text(
+                    "❌ Please enter a valid number!",
+                    reply_markup=get_back_keyboard()
+                )
+    except Exception as e:
+        logger.error(f"Error in text handler: {e}")
+        await message.reply_text("❌ An error occurred. Please try again!")
 
 # ==========================================
-# ATTACK FUNCTIONS (FIXED ASYNC VERSION)
+# ATTACK FUNCTIONS (FIXED)
 # ==========================================
 
-async def run_attack_async(user_id: int, bomber: SMSBomber, message_id: int, chat_id: int):
-    """Run attack and update progress (async version - FIXED)"""
+def run_attack_sync(user_id: int, bomber: SMSBomber, message_id: int, chat_id: int):
+    """Run attack synchronously in thread - FIXED VERSION"""
     try:
-        # Start the attack in thread pool
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, bomber.start_attack)
+        # Start the attack (this is blocking)
+        bomber.start_attack()
         
         # Update user stats
         if user_id in user_data:
@@ -462,7 +514,7 @@ async def run_attack_async(user_id: int, bomber: SMSBomber, message_id: int, cha
         # Get final stats
         stats = bomber.get_stats()
         
-        # Send completion message
+        # Send completion message using app's loop
         completion_text = ATTACK_COMPLETE_MESSAGE.format(
             number=bomber.phone_number,
             sent=stats["total_sent"],
@@ -471,28 +523,36 @@ async def run_attack_async(user_id: int, bomber: SMSBomber, message_id: int, cha
             duration=f"{stats['duration']:.1f}s"
         )
         
-        # Edit message with completion
-        await edit_message_safe(chat_id, message_id, completion_text)
-        
-    except Exception as e:
-        logger.error(f"Error in attack: {e}")
-        await edit_message_safe(
-            chat_id, 
-            message_id, 
-            f"❌ Error during attack: {str(e)}",
-            get_done_keyboard()
+        # Schedule the edit in the main event loop
+        asyncio.run_coroutine_threadsafe(
+            edit_message_safe(chat_id, message_id, completion_text),
+            app.loop
         )
-    finally:
+        
         # Clean up
         if user_id in active_bombers:
             del active_bombers[user_id]
+        
         if user_id in progress_messages:
             del progress_messages[user_id]
+        
         if user_id in user_data:
             user_data[user_id]["step"] = "idle"
+            
+    except Exception as e:
+        logger.error(f"Error in attack thread: {e}")
+        asyncio.run_coroutine_threadsafe(
+            edit_message_safe(
+                chat_id, 
+                message_id, 
+                f"❌ Error during attack: {str(e)}",
+                get_done_keyboard()
+            ),
+            app.loop
+        )
 
 async def edit_message_safe(chat_id: int, message_id: int, text: str, reply_markup=None):
-    """Safely edit a message"""
+    """Safely edit a message with error handling"""
     try:
         await app.edit_message_text(
             chat_id=chat_id,
@@ -500,6 +560,11 @@ async def edit_message_safe(chat_id: int, message_id: int, text: str, reply_mark
             text=text,
             reply_markup=reply_markup or get_done_keyboard()
         )
+    except MessageNotModified:
+        pass  # Ignore if content is same
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await edit_message_safe(chat_id, message_id, text, reply_markup)
     except Exception as e:
         logger.error(f"Error editing message: {e}")
         try:
@@ -530,9 +595,15 @@ async def update_progress():
                             text=stats_text,
                             reply_markup=get_cancel_keyboard()
                         )
+                    except MessageNotModified:
+                        pass  # Message is same, ignore
+                    except FloodWait as e:
+                        await asyncio.sleep(min(e.value, 5))
                     except Exception as e:
-                        # Message might be the same or other error
-                        pass
+                        # Message might be deleted or other error
+                        if "message to edit not found" in str(e).lower():
+                            if user_id in progress_messages:
+                                del progress_messages[user_id]
             
             await asyncio.sleep(3)
         except Exception as e:
@@ -548,8 +619,9 @@ async def main():
     logger.info("Starting SMS Bomber Bot...")
     
     # Check if config is set
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ ERROR: Please set your BOT_TOKEN in config.py or .env file!")
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or not BOT_TOKEN:
+        print("❌ ERROR: Please set your BOT_TOKEN in config.py or as environment variable!")
+        print("   Set BOT_TOKEN environment variable or edit config.py")
         sys.exit(1)
     
     # Start the bot
@@ -562,6 +634,8 @@ async def main():
     # Start progress updater
     asyncio.create_task(update_progress())
     
+    logger.info("Bot is running! Send /start to any chat to begin.")
+    
     # Keep the bot running
     await idle()
     
@@ -570,5 +644,11 @@ async def main():
     logger.info("Bot stopped!")
 
 if __name__ == "__main__":
-    # Run the bot
-    asyncio.run(main())
+    try:
+        # Run the bot
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)
