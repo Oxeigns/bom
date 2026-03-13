@@ -256,7 +256,7 @@ async def cmd_start(client, message: Message):
             pass
 
 
-@app.on_message(filters.command("help") & (filters.private | filters.group | filters.supergroup))
+@app.on_message(filters.command("help") & (filters.private | filters.group))
 async def cmd_help(client, message: Message):
     """Handle /help"""
     try:
@@ -301,7 +301,7 @@ async def cmd_help(client, message: Message):
         await message.reply_text("❌ Error showing help.")
 
 
-@app.on_message(filters.command("stats") & (filters.private | filters.group | filters.supergroup))
+@app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def cmd_stats(client, message: Message):
     """Handle /stats"""
     try:
@@ -495,7 +495,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
 # TEXT MESSAGE HANDLER (state machine)
 # ============================================================
 
-@app.on_message(filters.text & (filters.private | filters.group | filters.supergroup))
+@app.on_message(filters.text & (filters.private | filters.group))
 async def text_handler(client, message: Message):
     """Handle user text input for the attack flow"""
     user = message.from_user
