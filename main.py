@@ -143,16 +143,11 @@ def done_keyboard() -> InlineKeyboardMarkup:
 # ==========================================
 
 async def check_membership(user_id: int) -> bool:
-    """Check if user is in required channel"""
-    if not channel_config.is_configured:
-        return True
-    
-    try:
-        member = await app.get_chat_member(channel_config.ID, user_id)
-        return member.status not in ("left", "kicked")
-    except UserNotParticipant:
-        return False
-    except Exception as e:
+    """
+
+[Content truncated due to size limit. Use line ranges to read in chunks]
+
+ as e:
         logger.error(f"Membership check error: {e}")
         return True  # Fail open
 
@@ -161,7 +156,6 @@ async def check_membership(user_id: int) -> bool:
 # HANDLERS
 # ==========================================
 
-@logger.catch
 @app.on_message(filters.command("start") & (filters.private | filters.group))
 async def cmd_start(client, message: Message):
     """Handle /start command in both private and group chats"""
@@ -207,14 +201,18 @@ async def cmd_start(client, message: Message):
             pass
 
 
-@app.on_message(filters.command("help"))
+@app.on_message(filters.command("help") & (filters.private | filters.group))
 async def cmd_help(client, message: Message):
-    """Handle /help command"""
-    help_text = """
+    """Handle /help command in both private and group chats"""
+    try:
+        user_id = message.from_user.id if message.from_user else None
+        logger.info(f"/help from user {user_id} in chat {message.chat.id}")
+        
+        help_text = """
 **📖 Help Guide**
 
 **How to use:**
-1. Click "🚀 Start Attack"
+1. Click "🚀 Start Attack" (DMs only)
 2. Enter target phone number
 3. Enter number of SMS to send
 4. Wait for completion
@@ -229,22 +227,40 @@ async def cmd_help(client, message: Message):
 • {cooldown}h cooldown between uses
 • {concurrent} concurrent attacks max
 
+**Note:** SMS bombing only works in private messages with the bot.
+
 **For authorized security testing only.**
 """.format(
-        max=rate_limits.MAX_ATTEMPTS_PER_USER,
-        cooldown=rate_limits.COOLDOWN_HOURS,
-        concurrent=rate_limits.MAX_CONCURRENT_ATTACKS
-    )
-    await message.reply_text(help_text, reply_markup=main_keyboard())
+            max=rate_limits.MAX_ATTEMPTS_PER_USER,
+            cooldown=rate_limits.COOLDOWN_HOURS,
+            concurrent=rate_limits.MAX_CONCURRENT_ATTACKS
+        )
+        
+        # In groups, don't show the keyboard (buttons don't work well in groups)
+        if message.chat.type == "private":
+            await message.reply_text(help_text, reply_markup=main_keyboard())
+        else:
+            await message.reply_text(help_text)
+            
+    except Exception as e:
+        logger.error(f"Error in /help: {e}", exc_info=True)
+        await message.reply_text("❌ Error showing help.")
 
 
-@app.on_message(filters.command("stats"))
+@app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def cmd_stats(client, message: Message):
-    """Handle /stats command"""
-    user = message.from_user
-    session = state.get_session(user.id)
-    
-    stats_text = f"""
+    """Handle /stats command in both private and group chats"""
+    try:
+        user = message.from_user
+        if not user:
+            await message.reply_text("❌ Cannot identify user.")
+            return
+            
+        logger.info(f"/stats from user {user.id} (@{user.username})")
+        
+        session = state.get_session(user.id, user.username)
+        
+        stats_text = f"""
 **📊 Your Statistics**
 
 👤 User ID: `{user.id}`
@@ -255,13 +271,25 @@ async def cmd_stats(client, message: Message):
 🌐 Active Attacks: {len(state.active_bombers)}
 📤 Total Sent Today: {state.global_count}
 """
-    await message.reply_text(stats_text, reply_markup=main_keyboard())
+        # In groups, don't show the keyboard
+        if message.chat.type == "private":
+            await message.reply_text(stats_text, reply_markup=main_keyboard())
+        else:
+            await message.reply_text(stats_text)
+            
+    except Exception as e:
+        logger.error(f"Error in /stats: {e}", exc_info=True)
+        await message.reply_text("❌ Error retrieving stats.")
 
 
 @app.on_message(filters.command("admin") & filters.user(ADMIN_IDS))
 async def cmd_admin(client, message: Message):
-    """Admin panel"""
-    admin_text = f"""
+    """Admin panel - works anywhere for admins"""
+    try:
+        user = message.from_user
+        logger.info(f"Admin command from {user.id} (@{user.username})")
+        
+        admin_text = f"""
 **🔐 Admin Panel**
 
 **System Status:**
@@ -270,8 +298,14 @@ async def cmd_admin(client, message: Message):
 ⏱️ Cooldowns: {len(state.cooldowns)}
 
 **Endpoints:** {len(TARGET_ENDPOINTS)}
+
+**Config:**
+Channel: {channel_config.USERNAME if channel_config.is_configured else 'Not set'}
 """
-    await message.reply_text(admin_text)
+        await message.reply_text(admin_text)
+    except Exception as e:
+        logger.error(f"Admin error: {e}", exc_info=True)
+        await message.reply_text("❌ Error in admin command.")
 
 
 @app.on_callback_query()
