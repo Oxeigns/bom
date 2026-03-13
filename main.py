@@ -143,11 +143,19 @@ def done_keyboard() -> InlineKeyboardMarkup:
 # ==========================================
 
 async def check_membership(user_id: int) -> bool:
-    """
+    """Check if user is member of required channel."""
+    if not channel_config.is_configured:
+        return True
 
-[Content truncated due to size limit. Use line ranges to read in chunks]
-
- as e:
+    try:
+        member = await app.get_chat_member(channel_config.ID, user_id)
+        return member.status not in {"left", "kicked"}
+    except UserNotParticipant:
+        return False
+    except ChatAdminRequired:
+        logger.warning("Bot lacks admin permission to check channel membership")
+        return True  # Fail open if bot cannot verify
+    except Exception as e:
         logger.error(f"Membership check error: {e}")
         return True  # Fail open
 
