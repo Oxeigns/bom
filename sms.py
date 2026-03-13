@@ -2,6 +2,7 @@
 """
 SMS Bomber Core Module - FIXED
 Async implementation with proper error handling and rate limiting
+Compatible with Python 3.8+
 """
 
 import asyncio
@@ -11,7 +12,7 @@ import secrets
 import ssl
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, Tuple
 from datetime import datetime
 import logging
 
@@ -104,11 +105,8 @@ class SMSBomber:
         self._ssl_context = ssl.create_default_context()
 
     def _normalize_phone(self, phone: str) -> str:
-        """Normalize to +91XXXXXXXXXX format and reject invalid input."""
-        if not phone:
-            raise ValueError("Phone number is required")
-
-        digits = ''.join(filter(str.isdigit, phone.strip()))
+        """Normalize to +91XXXXXXXXXX format"""
+        digits = ''.join(filter(str.isdigit, phone))
         if len(digits) == 10 and digits[0] in "6789":
             return f"+91{digits}"
         if len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
@@ -344,7 +342,7 @@ class SMSBomber:
 """
 
 
-def validate_phone(phone: str) -> tuple[bool, str]:
+def validate_phone(phone: str) -> Tuple[bool, str]:
     """Validate and normalize Indian phone number"""
     if not phone or not phone.strip():
         return False, "Phone number cannot be empty"
