@@ -8,8 +8,11 @@ import os
 import sys
 import asyncio
 import logging
+import unicodedata
+from pathlib import Path
+from functools import wraps
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Awaitable, Callable
 from dataclasses import dataclass
 
 # ============================================================
@@ -68,12 +71,15 @@ from sms import SMSBomber, validate_phone, AttackStats
 # ============================================================
 # LOGGING SETUP
 # ============================================================
+LOG_FILE = Path(os.getenv("BOT_LOG_PATH", "./logs/bot.log")).expanduser().resolve()
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -95,6 +101,49 @@ class UserSession:
     total_attacks: int = 0
     message_id: Optional[int] = None
     chat_id: Optional[int] = None
+
+
+MAX_GLOBAL_COUNT = 10**12
+MAX_TEXT_INPUT_LEN = 100
+MAX_COUNT_INPUT_LEN = 10
+COMMAND_COOLDOWN_SECONDS = 3
+_command_cooldowns: Dict[int, Dict[str, datetime]] = {}
+
+
+def sanitize_input(text: str, max_length: int = MAX_TEXT_INPUT_LEN) -> str:
+    """Normalize and sanitize user-controlled message text."""
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKC", text)
+    filtered = ''.join(ch for ch in normalized if ch == "\n" or ord(ch) >= 32)
+    return filtered[:max_length].strip()
+
+
+def rate_limit(command_name: str, cooldown_seconds: int = COMMAND_COOLDOWN_SECONDS):
+    """Simple in-memory per-user command cooldown guard."""
+    def decorator(func: Callable[[Client, Message], Awaitable[None]]):
+        @wraps(func)
+        async def wrapper(client: Client, message: Message):
+            user = message.from_user
+            if not user:
+                return await func(client, message)
+
+            now = datetime.now()
+            user_limits = _command_cooldowns.setdefault(user.id, {})
+            last_used = user_limits.get(command_name)
+            if last_used:
+                elapsed = (now - last_used).total_seconds()
+                if elapsed < cooldown_seconds:
+                    wait = max(1, int(cooldown_seconds - elapsed))
+                    await message.reply_text(f"⏳ Slow down. Try /{command_name} again in {wait}s.")
+                    return
+
+            user_limits[command_name] = now
+            return await func(client, message)
+
+        return wrapper
+
+    return decorator
 
 
 # ============================================================
@@ -138,6 +187,34 @@ class BotState:
     async def can_start_attack(self) -> bool:
         async with self._lock:
             return len(self.active_bombers) < rate_limits.MAX_CONCURRENT_ATTACKS
+
+    async def try_register_bomber(self, user_id: int, bomber: SMSBomber) -> bool:
+        """Atomically register a running bomber for user."""
+        async with self._lock:
+            if user_id in self.active_bombers:
+                return False
+            self.active_bombers[user_id] = bomber
+            return True
+
+    async def remove_bomber(self, user_id: int):
+        async with self._lock:
+            self.active_bombers.pop(user_id, None)
+
+    async def add_global_count(self, amount: int):
+        async with self._lock:
+            next_value = self.global_count + max(0, amount)
+            self.global_count = min(next_value, MAX_GLOBAL_COUNT)
+
+    async def cleanup_expired_sessions(self):
+        """Drop stale sessions/cooldowns to avoid unbounded growth."""
+        expiry = timedelta(hours=max(1, rate_limits.COOLDOWN_HOURS * 2))
+        now = datetime.now()
+        async with self._lock:
+            expired = [uid for uid, ts in self.cooldowns.items() if (now - ts) > expiry]
+            for uid in expired:
+                self.cooldowns.pop(uid, None)
+                if uid not in self.active_bombers:
+                    self.sessions.pop(uid, None)
 
 
 # ============================================================
@@ -219,6 +296,7 @@ async def check_membership(user_id: int) -> bool:
 # ============================================================
 
 @app.on_message(filters.command("start") & (filters.private | filters.group))
+@rate_limit("start", cooldown_seconds=5)
 async def cmd_start(client, message: Message):
     """Handle /start"""
     try:
@@ -230,6 +308,7 @@ async def cmd_start(client, message: Message):
         logger.info(f"/start from {user.id} (@{user.username}) in {message.chat.type}")
 
         session = state.get_session(user.id, user.username)
+        await state.cleanup_expired_sessions()
         session.step = "idle"
         session.chat_id = message.chat.id
 
@@ -257,6 +336,7 @@ async def cmd_start(client, message: Message):
 
 
 @app.on_message(filters.command("help") & (filters.private | filters.group))
+@rate_limit("help", cooldown_seconds=5)
 async def cmd_help(client, message: Message):
     """Handle /help"""
     try:
@@ -302,6 +382,7 @@ async def cmd_help(client, message: Message):
 
 
 @app.on_message(filters.command("stats") & (filters.private | filters.group))
+@rate_limit("stats", cooldown_seconds=5)
 async def cmd_stats(client, message: Message):
     """Handle /stats"""
     try:
@@ -338,6 +419,7 @@ async def cmd_stats(client, message: Message):
 
 
 @app.on_message(filters.command("admin") & filters.private)
+@rate_limit("admin", cooldown_seconds=3)
 async def cmd_admin(client, message: Message):
     """Handle /admin — admin-only panel"""
     try:
@@ -466,7 +548,7 @@ async def callback_handler(client, callback_query: CallbackQuery):
             if user_id in state.active_bombers:
                 bomber = state.active_bombers[user_id]
                 await bomber.stop()
-                del state.active_bombers[user_id]
+                await state.remove_bomber(user_id)
 
             session.step = "idle"
             await callback_query.message.edit_text(
@@ -503,12 +585,16 @@ async def text_handler(client, message: Message):
         return
 
     user_id = user.id
-    text = message.text.strip()
+    text = sanitize_input(message.text)
     session = state.get_session(user_id, user.username)
     session.chat_id = message.chat.id
 
     # Ignore commands — let command handlers deal with them
     if text.startswith("/"):
+        return
+
+    if not text:
+        await message.reply_text("⚠️ Empty input is not allowed.")
         return
 
     back_kb = InlineKeyboardMarkup([
@@ -546,6 +632,13 @@ async def text_handler(client, message: Message):
 
     # ── COUNT INPUT ───────────────────────────────────────
     if session.step == "count":
+        if len(text) > MAX_COUNT_INPUT_LEN:
+            await message.reply_text(
+                MESSAGES["ERROR"].format(message="Input too long. Enter a smaller number."),
+                reply_markup=back_kb
+            )
+            return
+
         try:
             count = int(text)
         except ValueError:
@@ -562,10 +655,6 @@ async def text_handler(client, message: Message):
                 ),
                 reply_markup=back_kb
             )
-            return
-
-        if user_id in state.active_bombers:
-            await message.reply_text("⚠️ You already have an active attack running.")
             return
 
         session.count = count
@@ -586,7 +675,11 @@ async def text_handler(client, message: Message):
             count=count,
             progress_callback=lambda stats: _update_progress(user_id, stats)
         )
-        state.active_bombers[user_id] = bomber
+        registered = await state.try_register_bomber(user_id, bomber)
+        if not registered:
+            session.step = "idle"
+            await message.reply_text("⚠️ You already have an active attack running.")
+            return
 
         asyncio.create_task(_run_attack(user_id, bomber, message.chat.id))
         return
@@ -640,8 +733,7 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
         session.last_attack = datetime.now()
         await state.set_cooldown(user_id)
 
-        async with state._lock:
-            state.global_count += stats.total
+        await state.add_global_count(stats.total)
 
         complete_text = MESSAGES["ATTACK_COMPLETE"].format(
             number=session.phone,
@@ -668,7 +760,7 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
         try:
             await app.send_message(
                 chat_id,
-                MESSAGES["ERROR"].format(message=str(e)),
+                MESSAGES["ERROR"].format(message="An internal error occurred. Please try again later."),
                 reply_markup=done_keyboard()
             )
         except Exception:
@@ -677,7 +769,7 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
     finally:
         # Always clean up, even if attack crashed
         session.step = "idle"
-        state.active_bombers.pop(user_id, None)
+        await state.remove_bomber(user_id)
 
 
 # ============================================================
@@ -695,6 +787,7 @@ async def main():
     logger.info(f"  Admins   : {ADMIN_IDS or 'None'}")
     logger.info("=" * 55)
 
+    await state.cleanup_expired_sessions()
     await app.start()
     me = await app.get_me()
     logger.info(f"✅ Bot online: @{me.username} (ID: {me.id})")

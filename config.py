@@ -12,13 +12,56 @@ from typing import List, Dict, Optional
 # SAFE HELPER
 # ==========================================
 
-def safe_int(value: str, default: int = 0) -> int:
+def safe_int(
+    value: str,
+    default: int = 0,
+    min_val: int = 0,
+    max_val: int = 1_000_000_000,
+) -> int:
     """Safely convert string to int, return default on failure."""
     try:
         v = (value or "").strip()
-        return int(v) if v else default
+        if not v:
+            return default
+        result = int(v)
+        if result < min_val or result > max_val:
+            return default
+        return result
     except (ValueError, TypeError):
         return default
+
+
+
+
+def safe_float(
+    value: str,
+    default: float = 0.0,
+    min_val: float = 0.0,
+    max_val: float = 10.0,
+) -> float:
+    """Safely convert string to float, return default on failure."""
+    try:
+        v = (value or "").strip()
+        if not v:
+            return default
+        result = float(v)
+        if result < min_val or result > max_val:
+            return default
+        return result
+    except (ValueError, TypeError):
+        return default
+
+def parse_admin_ids(raw: str) -> List[int]:
+    """Parse comma-separated admin IDs and ignore invalid values safely."""
+    admin_ids: List[int] = []
+    for item in (raw or "").split(","):
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        parsed = safe_int(cleaned, default=-1, min_val=1, max_val=2_147_483_647)
+        if parsed > 0:
+            admin_ids.append(parsed)
+    return admin_ids
 
 
 # ==========================================
@@ -58,9 +101,7 @@ class ChannelConfig:
 # ==========================================
 
 ADMIN_IDS: List[int] = [
-    int(x.strip())
-    for x in os.getenv("ADMIN_IDS", "").split(",")
-    if x.strip().isdigit()
+    *parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 ]
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bomber.db")
@@ -71,11 +112,11 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bomber.db")
 # ==========================================
 
 class RateLimits:
-    MAX_ATTEMPTS_PER_USER: int = 100
-    MAX_ATTEMPTS_GLOBAL: int = 1000
-    COOLDOWN_HOURS: int = 24
-    REQUEST_DELAY: float = 1.0
-    MAX_CONCURRENT_ATTACKS: int = 5
+    MAX_ATTEMPTS_PER_USER: int = safe_int(os.getenv("MAX_ATTEMPTS_PER_USER"), 100, 1, 1000)
+    MAX_ATTEMPTS_GLOBAL: int = safe_int(os.getenv("MAX_ATTEMPTS_GLOBAL"), 1000, 1, 100000)
+    COOLDOWN_HOURS: int = safe_int(os.getenv("COOLDOWN_HOURS"), 24, 0, 168)
+    REQUEST_DELAY: float = safe_float(os.getenv("REQUEST_DELAY"), 1.0, 0.0, 10.0)
+    MAX_CONCURRENT_ATTACKS: int = safe_int(os.getenv("MAX_CONCURRENT_ATTACKS"), 5, 1, 100)
 
 
 # ==========================================
