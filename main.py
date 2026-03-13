@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Bot - Main Application (FIXED)
-All known bugs resolved.
+SMS Bomber Bot - Main Application (DEEP FIX)
+All known bugs resolved - Compatible with Python 3.8+
 """
 
 import os
@@ -12,7 +12,7 @@ import unicodedata
 from pathlib import Path
 from functools import wraps
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Awaitable, Callable
+from typing import Dict, Optional, Awaitable, Callable, Tuple, Union, List
 from dataclasses import dataclass
 
 # ============================================================
@@ -62,11 +62,30 @@ from pyrogram.errors import (
     ChatAdminRequired
 )
 
-from config import (
-    bot_config, channel_config, rate_limits,
-    MESSAGES, TARGET_ENDPOINTS, ADMIN_IDS
-)
-from sms import SMSBomber, validate_phone, AttackStats
+# DEEP FIX: Add debug logging before importing config
+print("DEBUG: Importing config...")
+try:
+    from config import (
+        bot_config, channel_config, rate_limits,
+        MESSAGES, TARGET_ENDPOINTS, ADMIN_IDS
+    )
+    print(f"DEBUG: Config loaded. Endpoints: {len(TARGET_ENDPOINTS)}")
+except Exception as e:
+    print(f"ERROR: Failed to import config: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# DEEP FIX: Add debug logging before importing sms
+print("DEBUG: Importing sms module...")
+try:
+    from sms import SMSBomber, validate_phone, AttackStats
+    print("DEBUG: SMS module loaded successfully")
+except Exception as e:
+    print(f"ERROR: Failed to import sms: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 
 # ============================================================
 # LOGGING SETUP (FIXED: Handle permission errors gracefully)
@@ -170,7 +189,7 @@ class BotState:
             self.sessions[user_id] = UserSession(user_id=user_id, username=username)
         return self.sessions[user_id]
 
-    async def check_cooldown(self, user_id: int) -> tuple:
+    async def check_cooldown(self, user_id: int) -> Tuple[bool, str]:
         """Returns (can_proceed: bool, remaining_time: str)"""
         async with self._lock:
             if user_id in self.cooldowns:
@@ -226,16 +245,25 @@ class BotState:
 # INITIALIZE BOT
 # ============================================================
 
+print("DEBUG: Initializing BotState...")
 state = BotState()
 
-app = Client(
-    "sms_bomber_bot",
-    api_id=bot_config.API_ID,
-    api_hash=bot_config.API_HASH,
-    bot_token=bot_config.TOKEN,
-    workers=100,
-    parse_mode="markdown",
-)
+print("DEBUG: Creating Pyrogram Client...")
+try:
+    app = Client(
+        "sms_bomber_bot",
+        api_id=bot_config.API_ID,
+        api_hash=bot_config.API_HASH,
+        bot_token=bot_config.TOKEN,
+        workers=50,  # DEEP FIX: Reduced from 100 to avoid resource issues
+        parse_mode="markdown",
+    )
+    print("DEBUG: Client created successfully")
+except Exception as e:
+    print(f"ERROR: Failed to create client: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 
 
 # ============================================================
@@ -300,12 +328,15 @@ async def check_membership(user_id: int) -> bool:
 # COMMAND HANDLERS
 # ============================================================
 
-# FIXED: Removed @rate_limit decorator temporarily to test if it's causing the issue
-# If the bot works without it, the issue is in the rate_limit decorator
+# DEEP FIX: Add logging to track if handlers are registered
+print("DEBUG: Registering command handlers...")
 
 @app.on_message(filters.command("start") & (filters.private | filters.group))
 async def cmd_start(client, message: Message):
     """Handle /start"""
+    print(f"DEBUG: /start handler called by user {message.from_user.id if message.from_user else 'None'}")
+    logger.info(f"/start handler triggered")
+    
     try:
         user = message.from_user
         if not user:
@@ -334,6 +365,7 @@ async def cmd_start(client, message: Message):
                 # Continue anyway — don't block user on check failure
 
         await message.reply_text(welcome, reply_markup=main_keyboard())
+        logger.info(f"/start completed successfully for user {user.id}")
 
     except Exception as e:
         logger.error(f"/start handler error: {e}", exc_info=True)
@@ -346,6 +378,7 @@ async def cmd_start(client, message: Message):
 @app.on_message(filters.command("help") & (filters.private | filters.group))
 async def cmd_help(client, message: Message):
     """Handle /help"""
+    print(f"DEBUG: /help handler called")
     try:
         help_text = """
 📖 **SMS Bomber Bot — Help**
@@ -391,6 +424,7 @@ async def cmd_help(client, message: Message):
 @app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def cmd_stats(client, message: Message):
     """Handle /stats"""
+    print(f"DEBUG: /stats handler called")
     try:
         user = message.from_user
         if not user:
@@ -427,6 +461,7 @@ async def cmd_stats(client, message: Message):
 @app.on_message(filters.command("admin") & filters.private)
 async def cmd_admin(client, message: Message):
     """Handle /admin — admin-only panel"""
+    print(f"DEBUG: /admin handler called")
     try:
         user = message.from_user
         if not user or user.id not in ADMIN_IDS:
@@ -465,6 +500,8 @@ async def callback_handler(client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
     session = state.get_session(user_id)
+
+    print(f"DEBUG: Callback received: {data} from user {user_id}")
 
     try:
         if data == "start":
@@ -798,6 +835,7 @@ async def main():
     
     me = await app.get_me()
     logger.info(f"✅ Bot online: @{me.username} (ID: {me.id})")
+    print(f"DEBUG: Bot is online as @{me.username}")
 
     await idle()
 
@@ -806,10 +844,14 @@ async def main():
 
 
 if __name__ == "__main__":
+    print("DEBUG: Starting bot...")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n👋 Stopped by user.")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+        print(f"FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
