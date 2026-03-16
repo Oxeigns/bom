@@ -2,6 +2,10 @@
 """
 SMS Bomber Bot - Main Application (PRODUCTION FIXED)
 Python 3.8+  |  Pyrogram 2.x  |  Polling mode
+
+ROOT CAUSE FIX: Client was created at module level but asyncio.run()
+creates a new event loop → "Future attached to a different loop" crash.
+FIX: Create Client inside main() OR use app.run() pattern.
 """
 
 import os
@@ -266,30 +270,10 @@ class BotState:
 
 
 # ============================================================
-# CREATE PYROGRAM CLIENT
-#
-# FIX: Do NOT set parse_mode at all.
-#      Default mode = Markdown + HTML combined.
-#      ParseMode.MARKDOWN = strict mode = CRASHES on
-#      any unescaped _ * ` [ in message text.
-#      That is why bot was not responding to /start.
+# GLOBAL STATE (created at module level - this is fine)
 # ============================================================
 
 state = BotState()
-
-try:
-    app = Client(
-        "sms_bomber_bot",
-        api_id     = bot_config.API_ID,
-        api_hash   = bot_config.API_HASH,
-        bot_token  = bot_config.TOKEN,
-        workers    = 50,
-        # NO parse_mode here — uses DEFAULT (Markdown + HTML combined, safe)
-    )
-    logger.info("Pyrogram Client created.")
-except Exception as _e:
-    logger.critical("Failed to create Client: %s", _e, exc_info=True)
-    sys.exit(1)
 
 
 # ============================================================
@@ -335,14 +319,9 @@ def back_keyboard() -> InlineKeyboardMarkup:
 
 # ============================================================
 # SAFE MESSAGE SENDER
-#
-# This is the KEY fix. All message sends go through here.
-# If Markdown parsing fails, it retries without parsing.
-# This ensures the bot NEVER silently fails to respond.
 # ============================================================
 
 async def safe_reply(message: Message, text: str, reply_markup=None):
-    """Send reply that never fails due to parse errors."""
     try:
         return await message.reply_text(
             text,
@@ -364,7 +343,6 @@ async def safe_reply(message: Message, text: str, reply_markup=None):
 
 
 async def safe_edit(message: Message, text: str, reply_markup=None):
-    """Edit message that never fails due to parse errors."""
     try:
         return await message.edit_text(
             text,
@@ -394,7 +372,6 @@ async def safe_edit(message: Message, text: str, reply_markup=None):
 # ============================================================
 
 async def check_force_join(client: Client, user_id: int) -> bool:
-    """Returns True if user can proceed."""
     if not channel_config.is_configured:
         return True
 
@@ -414,476 +391,493 @@ async def check_force_join(client: Client, user_id: int) -> bool:
 
 
 async def send_force_join(message: Message):
-    """Send force-join prompt."""
     text = MESSAGES["FORCE_JOIN"].format(channel=channel_config.USERNAME)
     await safe_reply(message, text, reply_markup=verify_keyboard())
 
 
 # ============================================================
-# /start COMMAND
+# ============================================================
+#
+#   MAIN FUNCTION — Client + Handlers created INSIDE here
+#   so they all share the SAME event loop.
+#
+#   This is the ROOT CAUSE FIX. Previously Client was created
+#   at module level, but asyncio.run() creates a new loop,
+#   causing "Future attached to a different loop" crash.
+#
+# ============================================================
 # ============================================================
 
-@app.on_message(filters.command("start") & (filters.private | filters.group))
-@rate_limit("start")
-async def cmd_start(client: Client, message: Message):
-    user = message.from_user
-    if not user:
-        return
+def main():
+    """
+    Build client, register all handlers, call app.run().
+    app.run() internally does: start() → idle() → stop()
+    and manages the event loop correctly.
+    """
 
-    try:
-        logger.info("/start from user %d (@%s)", user.id, user.username)
+    # ── Create Client INSIDE main ──────────────────────────
+    app = Client(
+        "sms_bomber_bot",
+        api_id    = bot_config.API_ID,
+        api_hash  = bot_config.API_HASH,
+        bot_token = bot_config.TOKEN,
+        workers   = 50,
+    )
+    logger.info("Pyrogram Client created.")
 
-        # Force-join check
-        if not await check_force_join(client, user.id):
-            await send_force_join(message)
+    # ════════════════════════════════════════════════════════
+    # /start COMMAND
+    # ════════════════════════════════════════════════════════
+
+    @app.on_message(filters.command("start") & (filters.private | filters.group))
+    @rate_limit("start")
+    async def cmd_start(client: Client, message: Message):
+        user = message.from_user
+        if not user:
             return
 
-        # Reset session
-        session = state.get_session(user.id, user.username)
-        await session.set(step="idle", phone=None, count=0)
-
-        text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
-        await safe_reply(message, text, reply_markup=main_keyboard())
-
-    except FloodWait as exc:
-        logger.warning("/start FloodWait: %ds", exc.value)
-        await asyncio.sleep(exc.value)
-    except Exception as exc:
-        logger.error("/start error: %s", exc, exc_info=True)
         try:
-            await safe_reply(message, "Something went wrong. Try /start again.")
-        except Exception:
-            pass
+            logger.info("/start from user %d (@%s)", user.id, user.username)
 
+            if not await check_force_join(client, user.id):
+                await send_force_join(message)
+                return
 
-# ============================================================
-# /help COMMAND
-# ============================================================
+            session = state.get_session(user.id, user.username)
+            await session.set(step="idle", phone=None, count=0)
 
-@app.on_message(filters.command("help") & (filters.private | filters.group))
-@rate_limit("help")
-async def cmd_help(client: Client, message: Message):
-    user = message.from_user
-    if not user:
-        return
+            text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
+            await safe_reply(message, text, reply_markup=main_keyboard())
 
-    try:
-        if not await check_force_join(client, user.id):
-            await send_force_join(message)
+        except FloodWait as exc:
+            logger.warning("/start FloodWait: %ds", exc.value)
+            await asyncio.sleep(exc.value)
+        except Exception as exc:
+            logger.error("/start error: %s", exc, exc_info=True)
+            try:
+                await safe_reply(message, "Something went wrong. Try /start again.")
+            except Exception:
+                pass
+
+    # ════════════════════════════════════════════════════════
+    # /help COMMAND
+    # ════════════════════════════════════════════════════════
+
+    @app.on_message(filters.command("help") & (filters.private | filters.group))
+    @rate_limit("help")
+    async def cmd_help(client: Client, message: Message):
+        user = message.from_user
+        if not user:
             return
 
-        help_text = (
-            "❓ **Help — SMS Bomber Bot**\n\n"
-            "**How to use:**\n"
-            "1. Press 🚀 Start Attack\n"
-            "2. Enter the target phone number\n"
-            "3. Enter how many SMS to send\n"
-            "4. Watch live progress\n\n"
-            "**Limits:**\n"
-            f"- Max {rate_limits.MAX_ATTEMPTS_PER_USER} SMS per attack\n"
-            f"- {rate_limits.COOLDOWN_HOURS}h cooldown between attacks\n"
-            f"- Max {rate_limits.MAX_CONCURRENT_ATTACKS} simultaneous attacks\n\n"
-            "**Commands:**\n"
-            "/start - Start the bot\n"
-            "/help - Show this message\n"
-            "/stats - Your statistics\n"
-            "/admin - Admin panel\n\n"
-            "For authorized security testing only."
-        )
+        try:
+            if not await check_force_join(client, user.id):
+                await send_force_join(message)
+                return
 
-        kb = main_keyboard() if message.chat.type == ChatType.PRIVATE else None
-        await safe_reply(message, help_text, reply_markup=kb)
-
-    except Exception as exc:
-        logger.error("/help error: %s", exc, exc_info=True)
-        await safe_reply(message, "Error showing help.")
-
-
-# ============================================================
-# /stats COMMAND
-# ============================================================
-
-@app.on_message(filters.command("stats") & (filters.private | filters.group))
-@rate_limit("stats")
-async def cmd_stats(client: Client, message: Message):
-    user = message.from_user
-    if not user:
-        return
-
-    try:
-        if not await check_force_join(client, user.id):
-            await send_force_join(message)
-            return
-
-        session = state.get_session(user.id, user.username)
-        last_atk = (
-            session.last_attack.strftime("%Y-%m-%d %H:%M")
-            if session.last_attack else "Never"
-        )
-
-        can_go, remaining = await state.check_cooldown(user.id)
-        cooldown_str = "None" if can_go else f"{remaining} remaining"
-
-        uname = user.username or "N/A"
-        stats_text = (
-            f"📊 **Your Statistics**\n\n"
-            f"👤 User: {user.id} (@{uname})\n"
-            f"🎯 Total Attacks: {session.total_attacks}\n"
-            f"📱 Last Target: {session.phone or 'N/A'}\n"
-            f"⏱ Last Attack: {last_atk}\n"
-            f"🕐 Cooldown: {cooldown_str}\n\n"
-            f"**Global:**\n"
-            f"⚡ Active: {len(state.active_bombers)}\n"
-            f"📤 Total Sent: {state.global_count}"
-        )
-
-        kb = main_keyboard() if message.chat.type == ChatType.PRIVATE else None
-        await safe_reply(message, stats_text, reply_markup=kb)
-
-    except Exception as exc:
-        logger.error("/stats error: %s", exc, exc_info=True)
-        await safe_reply(message, "Error fetching stats.")
-
-
-# ============================================================
-# /admin COMMAND
-# ============================================================
-
-@app.on_message(filters.command("admin") & filters.private)
-async def cmd_admin(client: Client, message: Message):
-    user = message.from_user
-    if not user:
-        return
-
-    try:
-        if not ADMIN_IDS or user.id not in ADMIN_IDS:
-            await safe_reply(message, MESSAGES["UNAUTHORIZED"])
-            return
-
-        admin_text = (
-            f"🔐 **Admin Panel**\n\n"
-            f"👤 Your ID: {user.id}\n"
-            f"📊 Active Attacks: {len(state.active_bombers)}\n"
-            f"🌍 Global SMS Sent: {state.global_count}\n"
-            f"👥 Sessions: {len(state.sessions)}\n"
-            f"🕐 Cooldowns Active: {len(state.cooldowns)}\n\n"
-            f"**Config:**\n"
-            f"Channel: {channel_config.USERNAME or 'Not set'}\n"
-            f"Admin IDs: {ADMIN_IDS or 'None'}\n"
-            f"Max/User: {rate_limits.MAX_ATTEMPTS_PER_USER}\n"
-            f"Cooldown: {rate_limits.COOLDOWN_HOURS}h\n"
-            f"Concurrent: {rate_limits.MAX_CONCURRENT_ATTACKS}"
-        )
-        await safe_reply(message, admin_text)
-
-    except Exception as exc:
-        logger.error("/admin error: %s", exc, exc_info=True)
-        await safe_reply(message, "Error in admin command.")
-
-
-# ============================================================
-# CALLBACK QUERY HANDLER
-# ============================================================
-
-@app.on_callback_query()
-async def callback_handler(client: Client, callback_query: CallbackQuery):
-    user_id  = callback_query.from_user.id
-    username = callback_query.from_user.username
-    data     = callback_query.data or ""
-    msg      = callback_query.message
-
-    try:
-        # ── verify ─────────────────────────────────────────
-        if data == "verify":
-            if await check_force_join(client, user_id):
-                session = state.get_session(user_id, username)
-                await session.set(step="idle")
-                text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
-                await safe_edit(msg, text, reply_markup=main_keyboard())
-                await callback_query.answer("✅ Verified! Welcome.")
-            else:
-                await callback_query.answer(
-                    "❌ You haven't joined the channel yet.", show_alert=True
-                )
-            return
-
-        # ── Force-join gate ────────────────────────────────
-        if not await check_force_join(client, user_id):
-            await callback_query.answer(
-                "Please join the channel first.", show_alert=True
+            help_text = (
+                "Help - SMS Bomber Bot\n\n"
+                "How to use:\n"
+                "1. Press Start Attack\n"
+                "2. Enter the target phone number\n"
+                "3. Enter how many SMS to send\n"
+                "4. Watch live progress\n\n"
+                "Limits:\n"
+                f"- Max {rate_limits.MAX_ATTEMPTS_PER_USER} SMS per attack\n"
+                f"- {rate_limits.COOLDOWN_HOURS}h cooldown between attacks\n"
+                f"- Max {rate_limits.MAX_CONCURRENT_ATTACKS} simultaneous attacks\n\n"
+                "Commands:\n"
+                "/start - Start the bot\n"
+                "/help - Show this message\n"
+                "/stats - Your statistics\n"
+                "/admin - Admin panel\n\n"
+                "For authorized security testing only."
             )
+
+            kb = main_keyboard() if message.chat.type == ChatType.PRIVATE else None
+            await safe_reply(message, help_text, reply_markup=kb)
+
+        except Exception as exc:
+            logger.error("/help error: %s", exc, exc_info=True)
+            await safe_reply(message, "Error showing help.")
+
+    # ════════════════════════════════════════════════════════
+    # /stats COMMAND
+    # ════════════════════════════════════════════════════════
+
+    @app.on_message(filters.command("stats") & (filters.private | filters.group))
+    @rate_limit("stats")
+    async def cmd_stats(client: Client, message: Message):
+        user = message.from_user
+        if not user:
             return
 
-        session = state.get_session(user_id, username)
-
-        # ── start_attack ───────────────────────────────────
-        if data == "start_attack":
-            # Already attacking?
-            if user_id in state.active_bombers:
-                await callback_query.answer(
-                    "You already have an active attack!", show_alert=True
-                )
+        try:
+            if not await check_force_join(client, user.id):
+                await send_force_join(message)
                 return
 
-            # Cooldown check
-            can_go, remaining = await state.check_cooldown(user_id)
-            if not can_go:
-                text = MESSAGES["COOLDOWN"].format(remaining=remaining)
-                await safe_edit(msg, text, reply_markup=main_keyboard())
-                await callback_query.answer()
-                return
-
-            # Global capacity check
-            if not await state.can_start_attack():
-                await callback_query.answer(
-                    "Server is busy. Try again shortly.", show_alert=True
-                )
-                return
-
-            await session.set(step="phone", phone=None, count=0)
-            text = MESSAGES["ENTER_PHONE"]
-            await safe_edit(msg, text, reply_markup=back_keyboard())
-            await callback_query.answer()
-
-        # ── stats ──────────────────────────────────────────
-        elif data == "stats":
+            session = state.get_session(user.id, user.username)
             last_atk = (
                 session.last_attack.strftime("%Y-%m-%d %H:%M")
                 if session.last_attack else "Never"
             )
-            can_go, remaining = await state.check_cooldown(user_id)
+
+            can_go, remaining = await state.check_cooldown(user.id)
             cooldown_str = "None" if can_go else f"{remaining} remaining"
 
+            uname = user.username or "N/A"
             stats_text = (
-                f"📊 **Your Statistics**\n\n"
-                f"🎯 Total Attacks: {session.total_attacks}\n"
-                f"📱 Last Target: {session.phone or 'N/A'}\n"
-                f"⏱ Last Attack: {last_atk}\n"
-                f"🕐 Cooldown: {cooldown_str}\n\n"
-                f"⚡ Active (global): {len(state.active_bombers)}\n"
-                f"📤 Total Sent (global): {state.global_count}"
+                f"Your Statistics\n\n"
+                f"User: {user.id} (@{uname})\n"
+                f"Total Attacks: {session.total_attacks}\n"
+                f"Last Target: {session.phone or 'N/A'}\n"
+                f"Last Attack: {last_atk}\n"
+                f"Cooldown: {cooldown_str}\n\n"
+                f"Global:\n"
+                f"Active: {len(state.active_bombers)}\n"
+                f"Total Sent: {state.global_count}"
             )
-            await safe_edit(msg, stats_text, reply_markup=main_keyboard())
-            await callback_query.answer()
 
-        # ── help ───────────────────────────────────────────
-        elif data == "help":
-            await safe_edit(
-                msg,
-                "❓ **Help**\n\nSend /help for detailed instructions.",
-                reply_markup=main_keyboard(),
-            )
-            await callback_query.answer()
+            kb = main_keyboard() if message.chat.type == ChatType.PRIVATE else None
+            await safe_reply(message, stats_text, reply_markup=kb)
 
-        # ── back ───────────────────────────────────────────
-        elif data == "back":
-            await session.set(step="idle")
-            text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
-            await safe_edit(msg, text, reply_markup=main_keyboard())
-            await callback_query.answer()
+        except Exception as exc:
+            logger.error("/stats error: %s", exc, exc_info=True)
+            await safe_reply(message, "Error fetching stats.")
 
-        # ── cancel ─────────────────────────────────────────
-        elif data == "cancel":
-            if user_id in state.active_bombers:
-                bomber = state.active_bombers[user_id]
-                await bomber.stop()
-                await state.remove_bomber(user_id)
+    # ════════════════════════════════════════════════════════
+    # /admin COMMAND
+    # ════════════════════════════════════════════════════════
 
-            await session.set(step="idle")
-            await safe_edit(msg, "❌ Attack cancelled.", reply_markup=main_keyboard())
-            await callback_query.answer("Cancelled.")
-
-        else:
-            await callback_query.answer("Unknown action.", show_alert=True)
-
-    except FloodWait as exc:
-        logger.warning("FloodWait in callback: %ds", exc.value)
-        await asyncio.sleep(exc.value)
-    except Exception as exc:
-        logger.error("Callback error (data=%r): %s", data, exc, exc_info=True)
-        try:
-            await callback_query.answer("An error occurred.", show_alert=True)
-        except Exception:
-            pass
-
-
-# ============================================================
-# TEXT MESSAGE HANDLER (state machine)
-#
-# FIX: Explicitly exclude all commands so they don't get
-# swallowed by this handler before reaching command handlers.
-# ============================================================
-
-@app.on_message(
-    filters.text
-    & ~filters.command(["start", "help", "stats", "admin"])
-    & (filters.private | filters.group)
-)
-async def text_handler(client: Client, message: Message):
-    user = message.from_user
-    if not user:
-        return
-    if user.is_bot:
-        return
-
-    try:
-        text    = sanitize_input(message.text or "")
-        session = state.get_session(user.id, user.username)
-        await session.set(chat_id=message.chat.id)
-
-        if not text:
-            await safe_reply(message, "Empty input is not allowed.")
+    @app.on_message(filters.command("admin") & filters.private)
+    async def cmd_admin(client: Client, message: Message):
+        user = message.from_user
+        if not user:
             return
 
-        # ── IDLE ──────────────────────────────────────────
-        if session.step == "idle":
-            if message.chat.type == ChatType.PRIVATE:
-                await safe_reply(
-                    message,
-                    "Press 🚀 **Start Attack** to begin.",
+        try:
+            if not ADMIN_IDS or user.id not in ADMIN_IDS:
+                await safe_reply(message, MESSAGES["UNAUTHORIZED"])
+                return
+
+            admin_text = (
+                f"Admin Panel\n\n"
+                f"Your ID: {user.id}\n"
+                f"Active Attacks: {len(state.active_bombers)}\n"
+                f"Global SMS Sent: {state.global_count}\n"
+                f"Sessions: {len(state.sessions)}\n"
+                f"Cooldowns Active: {len(state.cooldowns)}\n\n"
+                f"Config:\n"
+                f"Channel: {channel_config.USERNAME or 'Not set'}\n"
+                f"Admin IDs: {ADMIN_IDS or 'None'}\n"
+                f"Max/User: {rate_limits.MAX_ATTEMPTS_PER_USER}\n"
+                f"Cooldown: {rate_limits.COOLDOWN_HOURS}h\n"
+                f"Concurrent: {rate_limits.MAX_CONCURRENT_ATTACKS}"
+            )
+            await safe_reply(message, admin_text)
+
+        except Exception as exc:
+            logger.error("/admin error: %s", exc, exc_info=True)
+            await safe_reply(message, "Error in admin command.")
+
+    # ════════════════════════════════════════════════════════
+    # CALLBACK QUERY HANDLER
+    # ════════════════════════════════════════════════════════
+
+    @app.on_callback_query()
+    async def callback_handler(client: Client, callback_query: CallbackQuery):
+        user_id  = callback_query.from_user.id
+        username = callback_query.from_user.username
+        data     = callback_query.data or ""
+        msg      = callback_query.message
+
+        try:
+            if data == "verify":
+                if await check_force_join(client, user_id):
+                    session = state.get_session(user_id, username)
+                    await session.set(step="idle")
+                    text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
+                    await safe_edit(msg, text, reply_markup=main_keyboard())
+                    await callback_query.answer("Verified! Welcome.")
+                else:
+                    await callback_query.answer(
+                        "You haven't joined the channel yet.", show_alert=True
+                    )
+                return
+
+            if not await check_force_join(client, user_id):
+                await callback_query.answer(
+                    "Please join the channel first.", show_alert=True
+                )
+                return
+
+            session = state.get_session(user_id, username)
+
+            if data == "start_attack":
+                if user_id in state.active_bombers:
+                    await callback_query.answer(
+                        "You already have an active attack!", show_alert=True
+                    )
+                    return
+
+                can_go, remaining = await state.check_cooldown(user_id)
+                if not can_go:
+                    text = MESSAGES["COOLDOWN"].format(remaining=remaining)
+                    await safe_edit(msg, text, reply_markup=main_keyboard())
+                    await callback_query.answer()
+                    return
+
+                if not await state.can_start_attack():
+                    await callback_query.answer(
+                        "Server is busy. Try again shortly.", show_alert=True
+                    )
+                    return
+
+                await session.set(step="phone", phone=None, count=0)
+                text = MESSAGES["ENTER_PHONE"]
+                await safe_edit(msg, text, reply_markup=back_keyboard())
+                await callback_query.answer()
+
+            elif data == "stats":
+                last_atk = (
+                    session.last_attack.strftime("%Y-%m-%d %H:%M")
+                    if session.last_attack else "Never"
+                )
+                can_go, remaining = await state.check_cooldown(user_id)
+                cooldown_str = "None" if can_go else f"{remaining} remaining"
+
+                stats_text = (
+                    f"Your Statistics\n\n"
+                    f"Total Attacks: {session.total_attacks}\n"
+                    f"Last Target: {session.phone or 'N/A'}\n"
+                    f"Last Attack: {last_atk}\n"
+                    f"Cooldown: {cooldown_str}\n\n"
+                    f"Active (global): {len(state.active_bombers)}\n"
+                    f"Total Sent (global): {state.global_count}"
+                )
+                await safe_edit(msg, stats_text, reply_markup=main_keyboard())
+                await callback_query.answer()
+
+            elif data == "help":
+                await safe_edit(
+                    msg,
+                    "Help\n\nSend /help for detailed instructions.",
                     reply_markup=main_keyboard(),
                 )
-            return
+                await callback_query.answer()
 
-        # ── Force-join gate ────────────────────────────────
-        if not await check_force_join(client, user.id):
-            await send_force_join(message)
-            return
+            elif data == "back":
+                await session.set(step="idle")
+                text = MESSAGES["WELCOME"].format(count=len(TARGET_ENDPOINTS))
+                await safe_edit(msg, text, reply_markup=main_keyboard())
+                await callback_query.answer()
 
-        # ── PHONE INPUT ───────────────────────────────────
-        if session.step == "phone":
-            is_valid, result = validate_phone(text)
-            if not is_valid:
-                await safe_reply(
-                    message,
-                    MESSAGES["ERROR"].format(message=result),
-                    reply_markup=back_keyboard(),
-                )
-                return
+            elif data == "cancel":
+                if user_id in state.active_bombers:
+                    bomber = state.active_bombers[user_id]
+                    await bomber.stop()
+                    await state.remove_bomber(user_id)
 
-            await session.set(phone=result, step="count")
-            await safe_reply(
-                message,
-                MESSAGES["ENTER_COUNT"].format(
-                    max=rate_limits.MAX_ATTEMPTS_PER_USER,
-                    cooldown=rate_limits.COOLDOWN_HOURS,
-                ),
-                reply_markup=back_keyboard(),
-            )
-            return
+                await session.set(step="idle")
+                await safe_edit(msg, "Attack cancelled.", reply_markup=main_keyboard())
+                await callback_query.answer("Cancelled.")
 
-        # ── COUNT INPUT ───────────────────────────────────
-        if session.step == "count":
-            if len(text) > MAX_COUNT_INPUT_LEN:
-                await safe_reply(
-                    message,
-                    MESSAGES["ERROR"].format(message="Input too long."),
-                    reply_markup=back_keyboard(),
-                )
-                return
+            else:
+                await callback_query.answer("Unknown action.", show_alert=True)
 
+        except FloodWait as exc:
+            logger.warning("FloodWait in callback: %ds", exc.value)
+            await asyncio.sleep(exc.value)
+        except Exception as exc:
+            logger.error("Callback error (data=%r): %s", data, exc, exc_info=True)
             try:
-                count = int(text)
-            except ValueError:
-                await safe_reply(
-                    message,
-                    MESSAGES["ERROR"].format(message="Please enter a valid number."),
-                    reply_markup=back_keyboard(),
-                )
+                await callback_query.answer("An error occurred.", show_alert=True)
+            except Exception:
+                pass
+
+    # ════════════════════════════════════════════════════════
+    # TEXT MESSAGE HANDLER (state machine)
+    # ════════════════════════════════════════════════════════
+
+    @app.on_message(
+        filters.text
+        & ~filters.command(["start", "help", "stats", "admin"])
+        & (filters.private | filters.group)
+    )
+    async def text_handler(client: Client, message: Message):
+        user = message.from_user
+        if not user:
+            return
+        if user.is_bot:
+            return
+
+        try:
+            text    = sanitize_input(message.text or "")
+            session = state.get_session(user.id, user.username)
+            await session.set(chat_id=message.chat.id)
+
+            if not text:
+                await safe_reply(message, "Empty input is not allowed.")
                 return
 
-            if count < 1 or count > rate_limits.MAX_ATTEMPTS_PER_USER:
+            if session.step == "idle":
+                if message.chat.type == ChatType.PRIVATE:
+                    await safe_reply(
+                        message,
+                        "Press Start Attack to begin.",
+                        reply_markup=main_keyboard(),
+                    )
+                return
+
+            if not await check_force_join(client, user.id):
+                await send_force_join(message)
+                return
+
+            if session.step == "phone":
+                is_valid, result = validate_phone(text)
+                if not is_valid:
+                    await safe_reply(
+                        message,
+                        MESSAGES["ERROR"].format(message=result),
+                        reply_markup=back_keyboard(),
+                    )
+                    return
+
+                await session.set(phone=result, step="count")
                 await safe_reply(
                     message,
-                    MESSAGES["ERROR"].format(
-                        message=f"Enter a number between 1 and {rate_limits.MAX_ATTEMPTS_PER_USER}."
+                    MESSAGES["ENTER_COUNT"].format(
+                        max=rate_limits.MAX_ATTEMPTS_PER_USER,
+                        cooldown=rate_limits.COOLDOWN_HOURS,
                     ),
                     reply_markup=back_keyboard(),
                 )
                 return
 
-            # Capacity check
-            if not await state.can_start_attack():
-                await safe_reply(
+            if session.step == "count":
+                if len(text) > MAX_COUNT_INPUT_LEN:
+                    await safe_reply(
+                        message,
+                        MESSAGES["ERROR"].format(message="Input too long."),
+                        reply_markup=back_keyboard(),
+                    )
+                    return
+
+                try:
+                    count = int(text)
+                except ValueError:
+                    await safe_reply(
+                        message,
+                        MESSAGES["ERROR"].format(message="Please enter a valid number."),
+                        reply_markup=back_keyboard(),
+                    )
+                    return
+
+                if count < 1 or count > rate_limits.MAX_ATTEMPTS_PER_USER:
+                    await safe_reply(
+                        message,
+                        MESSAGES["ERROR"].format(
+                            message=f"Enter a number between 1 and {rate_limits.MAX_ATTEMPTS_PER_USER}."
+                        ),
+                        reply_markup=back_keyboard(),
+                    )
+                    return
+
+                if not await state.can_start_attack():
+                    await safe_reply(
+                        message,
+                        "Server is at full capacity. Try again shortly.",
+                        reply_markup=back_keyboard(),
+                    )
+                    return
+
+                await session.set(count=count, step="attacking")
+
+                status_msg = await safe_reply(
                     message,
-                    "Server is at full capacity. Try again shortly.",
-                    reply_markup=back_keyboard(),
+                    MESSAGES["ATTACK_START"].format(
+                        number=session.phone,
+                        count=count,
+                        endpoints=len(TARGET_ENDPOINTS),
+                    ),
+                    reply_markup=cancel_keyboard(),
+                )
+
+                if status_msg:
+                    await session.set(message_id=status_msg.id)
+                else:
+                    await session.set(step="idle")
+                    return
+
+                try:
+                    bomber = SMSBomber(
+                        phone_number      = session.phone,
+                        count             = count,
+                        progress_callback = lambda stats, uid=user.id: _update_progress(app, uid, stats),
+                    )
+                except Exception as exc:
+                    logger.error("Failed to create SMSBomber: %s", exc, exc_info=True)
+                    await session.set(step="idle")
+                    await safe_reply(message, "Failed to initialize attack. Try again.")
+                    return
+
+                registered = await state.try_register_bomber(user.id, bomber)
+                if not registered:
+                    await session.set(step="idle")
+                    await safe_reply(
+                        message,
+                        "You already have an active attack running.",
+                        reply_markup=main_keyboard(),
+                    )
+                    return
+
+                asyncio.create_task(
+                    _run_attack(app, user.id, bomber, message.chat.id),
+                    name=f"attack_{user.id}",
                 )
                 return
 
-            await session.set(count=count, step="attacking")
+            if session.step == "attacking":
+                await safe_reply(
+                    message,
+                    "Attack in progress. Use Cancel Attack to stop.",
+                    reply_markup=cancel_keyboard(),
+                )
 
-            status_msg = await safe_reply(
-                message,
-                MESSAGES["ATTACK_START"].format(
-                    number=session.phone,
-                    count=count,
-                    endpoints=len(TARGET_ENDPOINTS),
-                ),
-                reply_markup=cancel_keyboard(),
-            )
-
-            if status_msg:
-                await session.set(message_id=status_msg.id)
-            else:
-                await session.set(step="idle")
-                return
-
-            # Create bomber
+        except FloodWait as exc:
+            logger.warning("FloodWait in text_handler: %ds", exc.value)
+            await asyncio.sleep(exc.value)
+        except Exception as exc:
+            logger.error("text_handler error: %s", exc, exc_info=True)
             try:
-                bomber = SMSBomber(
-                    phone_number      = session.phone,
-                    count             = count,
-                    progress_callback = lambda stats, uid=user.id: _update_progress(uid, stats),
-                )
-            except Exception as exc:
-                logger.error("Failed to create SMSBomber: %s", exc, exc_info=True)
-                await session.set(step="idle")
-                await safe_reply(message, "Failed to initialize attack. Try again.")
-                return
+                await safe_reply(message, "An unexpected error occurred.")
+            except Exception:
+                pass
 
-            registered = await state.try_register_bomber(user.id, bomber)
-            if not registered:
-                await session.set(step="idle")
-                await safe_reply(
-                    message,
-                    "You already have an active attack running.",
-                    reply_markup=main_keyboard(),
-                )
-                return
+    # ════════════════════════════════════════════════════════
+    # LOG AND RUN
+    # ════════════════════════════════════════════════════════
 
-            # Fire and forget
-            asyncio.create_task(
-                _run_attack(user.id, bomber, message.chat.id),
-                name=f"attack_{user.id}",
-            )
-            return
+    logger.info("=" * 55)
+    logger.info("SMS Bomber Bot — Starting")
+    logger.info("  API_ID   : %s",    bot_config.API_ID)
+    logger.info("  Token    : %s***", bot_config.TOKEN[:8])
+    logger.info("  Endpoints: %d",    len(TARGET_ENDPOINTS))
+    logger.info("  ForceJoin: %s",    "Enabled" if channel_config.is_configured else "Disabled")
+    logger.info("  Admins   : %s",    ADMIN_IDS or "None")
+    logger.info("=" * 55)
 
-        # ── ATTACKING ─────────────────────────────────────
-        if session.step == "attacking":
-            await safe_reply(
-                message,
-                "Attack in progress. Use ❌ Cancel Attack to stop.",
-                reply_markup=cancel_keyboard(),
-            )
-
-    except FloodWait as exc:
-        logger.warning("FloodWait in text_handler: %ds", exc.value)
-        await asyncio.sleep(exc.value)
-    except Exception as exc:
-        logger.error("text_handler error: %s", exc, exc_info=True)
-        try:
-            await safe_reply(message, "An unexpected error occurred.")
-        except Exception:
-            pass
+    # app.run() does start() → idle() → stop() all in the
+    # SAME event loop. No "different loop" error possible.
+    app.run()
 
 
 # ============================================================
-# ATTACK HELPERS
+# ATTACK HELPERS (accept app as parameter)
 # ============================================================
 
-async def _update_progress(user_id: int, stats: AttackStats):
-    """Push live progress to the status message."""
+async def _update_progress(app: Client, user_id: int, stats: AttackStats):
     session = state.get_session(user_id)
     if not session.message_id or session.chat_id is None:
         return
@@ -904,7 +898,6 @@ async def _update_progress(user_id: int, stats: AttackStats):
     except FloodWait:
         pass
     except Exception as exc:
-        # Try without parse mode if markdown breaks
         try:
             await app.edit_message_text(
                 chat_id      = session.chat_id,
@@ -917,14 +910,12 @@ async def _update_progress(user_id: int, stats: AttackStats):
             logger.error("Progress update error for user %d: %s", user_id, exc)
 
 
-async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
-    """Run the full attack lifecycle."""
+async def _run_attack(app: Client, user_id: int, bomber: SMSBomber, chat_id: int):
     session = state.get_session(user_id)
 
     try:
         stats = await bomber.start()
 
-        # Update session stats atomically
         async with session._lock:
             session.total_attacks += 1
             session.last_attack    = datetime.now()
@@ -941,7 +932,6 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
             rate      = stats.rate,
         )
 
-        # Try edit, fallback to new message
         try:
             await app.edit_message_text(
                 chat_id      = chat_id,
@@ -955,18 +945,10 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
                     chat_id,
                     complete_text,
                     reply_markup=done_keyboard(),
+                    parse_mode=ParseMode.DISABLED,
                 )
-            except Exception:
-                # Last resort: send without parsing
-                try:
-                    await app.send_message(
-                        chat_id,
-                        complete_text,
-                        reply_markup=done_keyboard(),
-                        parse_mode=ParseMode.DISABLED,
-                    )
-                except Exception as e3:
-                    logger.error("Could not send completion msg: %s", e3)
+            except Exception as e3:
+                logger.error("Could not send completion msg: %s", e3)
 
     except asyncio.CancelledError:
         logger.info("Attack cancelled for user %d", user_id)
@@ -989,34 +971,12 @@ async def _run_attack(user_id: int, bomber: SMSBomber, chat_id: int):
 
 
 # ============================================================
-# MAIN ENTRY POINT
+# ENTRY POINT
 # ============================================================
-
-async def main():
-    logger.info("=" * 55)
-    logger.info("SMS Bomber Bot — Starting")
-    logger.info("  API_ID   : %s",    bot_config.API_ID)
-    logger.info("  Token    : %s***", bot_config.TOKEN[:8])
-    logger.info("  Endpoints: %d",    len(TARGET_ENDPOINTS))
-    logger.info("  ForceJoin: %s",    "Enabled" if channel_config.is_configured else "Disabled")
-    logger.info("  Admins   : %s",    ADMIN_IDS or "None")
-    logger.info("=" * 55)
-
-    await app.start()
-    await state.cleanup_expired_sessions()
-
-    me = await app.get_me()
-    logger.info("Bot online: @%s (ID: %d)", me.username, me.id)
-
-    await idle()
-
-    await app.stop()
-    logger.info("Bot stopped.")
-
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         print("\nStopped by user.")
     except Exception as exc:
