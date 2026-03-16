@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SMS Bomber Bot - Configuration (FIXED)
+SMS Bomber Bot - Configuration
 """
 
 import os
@@ -9,7 +9,7 @@ from typing import List, Dict, Optional
 
 
 # ==========================================
-# SAFE HELPER
+# SAFE HELPERS
 # ==========================================
 
 def safe_int(
@@ -18,7 +18,6 @@ def safe_int(
     min_val: int = 0,
     max_val: int = 1_000_000_000,
 ) -> int:
-    """Safely convert string to int, return default on failure."""
     try:
         v = (value or "").strip()
         if not v:
@@ -31,15 +30,12 @@ def safe_int(
         return default
 
 
-
-
 def safe_float(
     value: str,
     default: float = 0.0,
     min_val: float = 0.0,
     max_val: float = 10.0,
 ) -> float:
-    """Safely convert string to float, return default on failure."""
     try:
         v = (value or "").strip()
         if not v:
@@ -51,8 +47,8 @@ def safe_float(
     except (ValueError, TypeError):
         return default
 
+
 def parse_admin_ids(raw: str) -> List[int]:
-    """Parse comma-separated admin IDs and ignore invalid values safely."""
     admin_ids: List[int] = []
     for item in (raw or "").split(","):
         cleaned = item.strip()
@@ -70,9 +66,9 @@ def parse_admin_ids(raw: str) -> List[int]:
 
 @dataclass
 class BotConfig:
-    TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
-    API_ID: int = safe_int(os.getenv("API_ID"), 0)
-    API_HASH: str = os.getenv("API_HASH", "").strip()
+    TOKEN: str = ""
+    API_ID: int = 0
+    API_HASH: str = ""
 
     @property
     def is_configured(self) -> bool:
@@ -80,16 +76,16 @@ class BotConfig:
 
     def missing_vars(self) -> List[str]:
         missing = []
-        if not self.TOKEN:   missing.append("BOT_TOKEN")
-        if not self.API_ID:  missing.append("API_ID")
+        if not self.TOKEN:    missing.append("BOT_TOKEN")
+        if not self.API_ID:   missing.append("API_ID")
         if not self.API_HASH: missing.append("API_HASH")
         return missing
 
 
 @dataclass
 class ChannelConfig:
-    USERNAME: str = os.getenv("FORCE_JOIN_CHANNEL", "").strip()
-    ID: int = safe_int(os.getenv("FORCE_JOIN_CHANNEL_ID"), 0)
+    USERNAME: str = ""
+    ID: int = 0
 
     @property
     def is_configured(self) -> bool:
@@ -100,10 +96,7 @@ class ChannelConfig:
 # ADMIN & DATABASE
 # ==========================================
 
-ADMIN_IDS: List[int] = [
-    *parse_admin_ids(os.getenv("ADMIN_IDS", ""))
-]
-
+ADMIN_IDS: List[int] = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bomber.db")
 
 
@@ -112,11 +105,11 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bomber.db")
 # ==========================================
 
 class RateLimits:
-    MAX_ATTEMPTS_PER_USER: int = safe_int(os.getenv("MAX_ATTEMPTS_PER_USER"), 100, 1, 1000)
-    MAX_ATTEMPTS_GLOBAL: int = safe_int(os.getenv("MAX_ATTEMPTS_GLOBAL"), 1000, 1, 100000)
-    COOLDOWN_HOURS: int = safe_int(os.getenv("COOLDOWN_HOURS"), 24, 0, 168)
-    REQUEST_DELAY: float = safe_float(os.getenv("REQUEST_DELAY"), 1.0, 0.0, 10.0)
-    MAX_CONCURRENT_ATTACKS: int = safe_int(os.getenv("MAX_CONCURRENT_ATTACKS"), 5, 1, 100)
+    MAX_ATTEMPTS_PER_USER: int  = safe_int(os.getenv("MAX_ATTEMPTS_PER_USER"), 100, 1, 1000)
+    MAX_ATTEMPTS_GLOBAL: int    = safe_int(os.getenv("MAX_ATTEMPTS_GLOBAL"),  1000, 1, 100000)
+    COOLDOWN_HOURS: int         = safe_int(os.getenv("COOLDOWN_HOURS"),          24, 0, 168)
+    REQUEST_DELAY: float        = safe_float(os.getenv("REQUEST_DELAY"),        1.0, 0.0, 10.0)
+    MAX_CONCURRENT_ATTACKS: int = safe_int(os.getenv("MAX_CONCURRENT_ATTACKS"),   5, 1, 100)
 
 
 # ==========================================
@@ -131,13 +124,13 @@ USER_AGENTS: List[str] = [
 ]
 
 DEFAULT_HEADERS: Dict[str, str] = {
-    "Accept": "application/json, text/plain, */*",
+    "Accept":          "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
+    "Connection":      "keep-alive",
+    "Sec-Fetch-Dest":  "empty",
+    "Sec-Fetch-Mode":  "cors",
+    "Sec-Fetch-Site":  "same-origin",
 }
 
 
@@ -243,77 +236,63 @@ TARGET_ENDPOINTS: List[OTPEndpoint] = [
 # ==========================================
 
 MESSAGES = {
-    "WELCOME": """
-🚀 **SMS Bomber Bot**
+    "WELCOME": (
+        "🚀 **SMS Bomber Bot**\n\n"
+        "⚡ High-speed SMS testing tool\n"
+        "📱 Working endpoints: {count}\n"
+        "🛡️ Rate limited for safety\n\n"
+        "**Commands:**\n"
+        "/start - Start the bot\n"
+        "/help  - Show help\n"
+        "/stats - Your statistics\n\n"
+        "⚠️ **For authorized testing only**"
+    ),
 
-⚡ High-speed SMS testing tool
-📱 Working endpoints: {count}
-🛡️ Rate limited for safety
+    "FORCE_JOIN": (
+        "⚠️ **Channel Membership Required**\n\n"
+        "Join {channel} to use this bot.\n\n"
+        "Click the button below to join, then press **Verify**."
+    ),
 
-**Commands:**
-/start - Start the bot
-/help - Show help
-/stats - Your statistics
+    "ENTER_PHONE": (
+        "📱 **Enter Target Number**\n\n"
+        "Format: +91XXXXXXXXXX or 10-digit number\n\n"
+        "⚠️ Indian numbers only (+91)"
+    ),
 
-⚠️ **For authorized testing only**
-""",
+    "ENTER_COUNT": (
+        "🔢 **Enter SMS Count**\n\n"
+        "Min: 1 | Max: {max}\n"
+        "Recommended: 10-50\n\n"
+        "⏱️ Cooldown: {cooldown}h between uses"
+    ),
 
-    "FORCE_JOIN": """
-⚠️ **Channel Membership Required**
+    "ATTACK_START": (
+        "🚀 **Attack Started**\n\n"
+        "📱 Target: `{number}`\n"
+        "🔢 Count: {count}\n"
+        "🌐 Endpoints: {endpoints}\n\n"
+        "⏳ Sending..."
+    ),
 
-Join {channel} to use this bot.
+    "ATTACK_COMPLETE": (
+        "✅ **Attack Complete**\n\n"
+        "📱 Target: `{number}`\n"
+        "📤 Attempted: {attempted}\n"
+        "✅ Success: {success}\n"
+        "❌ Failed: {failed}\n"
+        "⏱️ Duration: {duration:.1f}s\n"
+        "⚡ Rate: {rate:.1f}/s"
+    ),
 
-Click the button below to join, then press Verify.
-""",
+    "COOLDOWN": (
+        "⏱️ **Cooldown Active**\n\n"
+        "Please wait **{remaining}** before next use.\n\n"
+        "This prevents abuse and protects the service."
+    ),
 
-    "ENTER_PHONE": """
-📱 **Enter Target Number**
-
-Format: +91XXXXXXXXXX or 10-digit number
-
-⚠️ Indian numbers only (+91)
-""",
-
-    "ENTER_COUNT": """
-🔢 **Enter SMS Count**
-
-Min: 1 | Max: {max}
-Recommended: 10-50
-
-⏱️ Cooldown: {cooldown}h between uses
-""",
-
-    "ATTACK_START": """
-🚀 **Attack Started**
-
-📱 Target: `{number}`
-🔢 Count: {count}
-🌐 Endpoints: {endpoints}
-
-⏳ Sending...
-""",
-
-    "ATTACK_COMPLETE": """
-✅ **Attack Complete**
-
-📱 Target: `{number}`
-📤 Attempted: {attempted}
-✅ Success: {success}
-❌ Failed: {failed}
-⏱️ Duration: {duration:.1f}s
-⚡ Rate: {rate:.1f}/s
-""",
-
-    "COOLDOWN": """
-⏱️ **Cooldown Active**
-
-Please wait {remaining} before next use.
-
-This prevents abuse and protects the service.
-""",
-
-    "ERROR": "❌ **Error:** {message}",
-    "SUCCESS": "✅ **Success:** {message}",
+    "ERROR":        "❌ **Error:** {message}",
+    "SUCCESS":      "✅ **Success:** {message}",
     "UNAUTHORIZED": "🚫 You are not authorized to use this command.",
 }
 
@@ -322,6 +301,18 @@ This prevents abuse and protects the service.
 # INITIALIZE CONFIGS
 # ==========================================
 
-bot_config = BotConfig()
-channel_config = ChannelConfig()
-rate_limits = RateLimits()
+def build_configs():
+    bot_config = BotConfig(
+        TOKEN    = os.getenv("BOT_TOKEN", "").strip(),
+        API_ID   = safe_int(os.getenv("API_ID", ""), 0),
+        API_HASH = os.getenv("API_HASH", "").strip(),
+    )
+    channel_config = ChannelConfig(
+        USERNAME = os.getenv("FORCE_JOIN_CHANNEL", "").strip(),
+        ID       = safe_int(os.getenv("FORCE_JOIN_CHANNEL_ID", ""), 0),
+    )
+    rate_limits = RateLimits()
+    return bot_config, channel_config, rate_limits
+
+
+bot_config, channel_config, rate_limits = build_configs()
